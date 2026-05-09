@@ -20,6 +20,9 @@ struct SemanticAnalyzer {
   static Type type_unify(const Type& type_left, const Type& type_right);
   static Type base_type_node_unify(TypeNode left, TypeNode right);
   static Type container_type_unify(const Type& left, const Type& right);
+  static Type super_type_unify(const Type& left, const Type& right);
+  static Type super_base_type_unify(TypeNode left, TypeNode right);
+  static Type super_container_type_unify(const Type& left, const Type& right);
   void visit_id(AST *const node);
   void visit_expr(AST *const node);
   void visit_assign_expr(AST *const node);
@@ -111,10 +114,7 @@ inline void SemanticAnalyzer::visit_expr(AST *const node) {
   visit_assign_expr(node);
 }
 inline void SemanticAnalyzer::visit_assign_expr(AST *const node) {
-  if (node->node == Node::RANGE) {
-    visit_range_expr(node);
-    return;
-  }
+  if (node->node == Node::ASSIGN) {
   visit_range_expr(node->children[0].get());
   visit_assign_expr(node->children[1].get());
   Type type_left = node->children[0]->type;
@@ -124,12 +124,12 @@ inline void SemanticAnalyzer::visit_assign_expr(AST *const node) {
     type_error(node);
   }
   node->type = type;
+  } else {
+    visit_range_expr(node);
+  }
 }
 inline void SemanticAnalyzer::visit_range_expr(AST *const node) {
-  if (node->node == Node::BINARY_OP && std::get<BinaryOpNode>(node->v) == BinaryOpNode::OR) {
-    visit_logical_or_expr(node);
-    return;
-  }
+  if (node->node == Node::RANGE) {
   visit_expr(node->children[0].get());
   if (node->children[0]->type != Type::from_type_node(TypeNode::INT)) {
     type_error(node);
@@ -144,12 +144,12 @@ inline void SemanticAnalyzer::visit_range_expr(AST *const node) {
       type_error(node);
     }
   }
+  } else {
+    visit_logical_or_expr(node);
+  }
 }
 inline void SemanticAnalyzer::visit_logical_or_expr(AST *const node) {
-  if (std::get<BinaryOpNode>(node->v) == BinaryOpNode::AND) {
-    visit_logical_and_expr(node);
-    return;
-  }
+  if (auto p = std::get_if<LogicalOpNode>(&node->v); p && *p == LogicalOpNode::OR) {
   visit_logical_or_expr(node->children[0].get());
   visit_logical_or_expr(node->children[1].get());
   Type type_left = type_unify(Type::from_type_node(TypeNode::BOOL), node->children[0]->type);
@@ -161,12 +161,12 @@ inline void SemanticAnalyzer::visit_logical_or_expr(AST *const node) {
     type_error(node);
   }
   node->type = Type::from_type_node(TypeNode::BOOL);
+  } else {
+    visit_logical_and_expr(node);
+  }
 }
 inline void SemanticAnalyzer::visit_logical_and_expr(AST *const node) {
-  if (std::get<BinaryOpNode>(node->v) == BinaryOpNode::BITWISE_OR) {
-    visit_bitwise_or_expr(node);
-    return;
-  }
+  if (auto p = std::get_if<LogicalOpNode>(&node->v); p && *p == LogicalOpNode::AND) {
   visit_logical_and_expr(node->children[0].get());
   visit_logical_and_expr(node->children[1].get());
   Type type_left = type_unify(Type::from_type_node(TypeNode::BOOL), node->children[0]->type);
@@ -178,12 +178,12 @@ inline void SemanticAnalyzer::visit_logical_and_expr(AST *const node) {
     type_error(node);
   }
   node->type = Type::from_type_node(TypeNode::BOOL);
+  } else {
+    visit_bitwise_or_expr(node);
+  }
 }
 inline void SemanticAnalyzer::visit_bitwise_or_expr(AST *const node) {
-  if (std::get<BinaryOpNode>(node->v) == BinaryOpNode::BITWISE_XOR) {
-    visit_bitwise_xor_expr(node);
-    return;
-  }
+  if (auto p = std::get_if<BitwiseOpNode>(&node->v); p && *p == BitwiseOpNode::BITWISE_OR) {
   visit_bitwise_or_expr(node->children[0].get());
   visit_bitwise_or_expr(node->children[1].get());
   Type type_left = type_unify(Type::from_type_node(TypeNode::INT), node->children[0]->type);
@@ -195,15 +195,89 @@ inline void SemanticAnalyzer::visit_bitwise_or_expr(AST *const node) {
     type_error(node);
   }
   node->type = Type::from_type_node(TypeNode::INT);
+  } else {
+    visit_bitwise_xor_expr(node);
+  }
 }
 inline void SemanticAnalyzer::visit_bitwise_xor_expr(AST *const node) {
-  if (std::get<BinaryOpNode>(node->v) == BinaryOpNode::BITWISE_AND) {
-    visit_bitwise_and_expr(node);
-    return;
-  }
+  if (auto p = std::get_if<BitwiseOpNode>(&node->v); p && *p == BitwiseOpNode::BITWISE_XOR) {
   visit_bitwise_xor_expr(node->children[0].get());
   visit_bitwise_xor_expr(node->children[1].get());
-  Type type_left = type_unify(Type::from_type_node(TypeNode::INT), node->children[0]->type)
+  Type type_left = type_unify(Type::from_type_node(TypeNode::INT), node->children[0]->type);
+  if (type_left.is_null) {
+    type_error(node);
+  }
+  Type type_right = type_unify(Type::from_type_node(TypeNode::INT), node->children[1]->type);
+  if (type_right.is_null) {
+    type_error(node);
+  }
+  node->type = Type::from_type_node(TypeNode::INT);
+  } else {
+    visit_bitwise_and_expr(node);
+  }
+}
+inline void SemanticAnalyzer::visit_bitwise_and_expr(AST *const node) {
+  if (auto p = std::get_if<BitwiseOpNode>(&node->v); p && *p == BitwiseOpNode::BITWISE_AND) {
+  visit_bitwise_and_expr(node->children[0].get());
+  visit_bitwise_and_expr(node->children[1].get());
+  Type type_left = type_unify(Type::from_type_node(TypeNode::INT), node->children[0]->type);
+  if (type_left.is_null) {
+    type_error(node);
+  }
+  Type type_right = type_unify(Type::from_type_node(TypeNode::INT), node->children[1]->type);
+  if (type_right.is_null) {
+    type_error(node);
+  }
+  node->type = Type::from_type_node(TypeNode::INT);
+  } else {
+    visit_equality_expr(node);
+  }
+}
+inline void SemanticAnalyzer::visit_equality_expr(AST *const node) {
+  if (std::holds_alternative<EqualityOpNode>(node->v)) {
+    visit_equality_expr(node->children[0].get());
+    visit_equality_expr(node->children[1].get());
+    Type type_left = node->children[0]->type;
+    Type type_right = node->children[1]->type;
+    if (type_unify(type_left, type_right).is_null) {
+      type_error(node);
+    }
+    node->type = Type::from_type_node(TypeNode::BOOL);
+  } else {
+    visit_relational_expr(node);
+  }
+}
+inline void SemanticAnalyzer::visit_relational_expr(AST *const node) {
+  if (std::holds_alternative<RelationalOpNode>(node->v)) {
+    visit_relational_expr(node->children[0].get());
+    visit_relational_expr(node->children[1].get());
+    Type type_left = node->children[0]->type;
+    Type type_right = node->children[1]->type;
+    Type type = type_unify(type_left, type_right);
+    if (type.is_null) {
+      type_error(node);
+    }
+    switch (type.type_node) {
+      case TypeNode::VECTOR:
+      case TypeNode::MATRIX:
+      case TypeNode::TENSOR:
+        type_error(node);
+      default:
+        break;
+    }
+    node->type = Type::from_type_node(TypeNode::BOOL);
+  } else {
+   visit_additive_expr(node);
+  }
+}
+inline void SemanticAnalyzer::visit_additive_expr(AST *const node) {
+  if (std::holds_alternative<AdditiveOpNode>(node->v)) {
+    visit_additive_expr(node->children[0].get());
+    visit_additive_expr(node->children[1].get());
+    Type left = node->children[0]->type;
+    Type right = node->children[1]->type;
+  }
+}
 inline void SemanticAnalyzer::visit_const_decl(AST *const node) {
   std::string id = std::get<std::string>(node->children[0]->v);
   Type type;
@@ -229,7 +303,7 @@ inline Type SemanticAnalyzer::type_unify(const Type& type_left, const Type& type
     case TypeNode::INT:
     case TypeNode::FLOAT:
     case TypeNode::BOOL:
-      return base_type_node_unify(type_left.type_node, type_right.type_node);
+      return base_type_node_unify(type_left, type_right);
     case TypeNode::VECTOR:
     case TypeNode::MATRIX:
     case TypeNode::TENSOR:
@@ -271,5 +345,22 @@ inline Type SemanticAnalyzer::container_type_unify(const Type& left, const Type&
       t.base_type = base_type;
       t.sizes = left.sizes;
       return t;
+  }
+}
+inline Type SemanticAnalyzer::super_base_type_unify(TypeNode left, TypeNode right) {
+  //TODO
+  //WE SELECT THE HIGHER TYPE (THE SUPER TYPE)
+  switch (left) {
+    case TypeNode::BOOL:
+      return right;
+    case TypeNode::INT:
+      switch (right) {
+        case TypeNode::FLOAT:
+          return right;
+        default:
+          return left;
+      }
+    default:
+      return left;
   }
 }

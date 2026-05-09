@@ -70,7 +70,7 @@ additive_expr ::= multiplicative_expr { ( PLUS | MINUS ) multiplicative_expr }
 
 multiplicative_expr ::= unary_expr { ( MUL | DIV | DOT_MUL | DOT_DIV ) unary_expr }
 
-unary_expr ::= ( MINUS | NOT | BITWISE_NOT ) unary_expr 
+unary_expr ::= ( PLUS | MINUS | NOT | BITWISE_NOT ) unary_expr 
              | postfix_expr
 
 postfix_expr ::= primary_expr { LBRACKET expr_list RBRACKET 

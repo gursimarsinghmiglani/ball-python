@@ -1,4 +1,4 @@
-#pragma onc
+#pragma once
 #include "ast.hpp"
 #include <iostream>
 struct Parser {
@@ -214,7 +214,7 @@ inline std::unique_ptr<AST> Parser::parse_logical_or_expr() {
     auto right = parse_logical_and_expr();
     auto ast = std::make_unique<AST>();
     ast->node = Node::BINARY_OP;
-    ast->v = BinaryOpNode::OR;
+    ast->v = LogicalOpNode::OR;
     ast->children.push_back(std::move(left));
     ast->children.push_back(std::move(right));
     left = std::move(ast);
@@ -230,7 +230,7 @@ inline std::unique_ptr<AST> Parser::parse_logical_and_expr() {
     auto right = parse_bitwise_or_expr();
     auto ast = std::make_unique<AST>();
     ast->node = Node::BINARY_OP;
-    ast->v = BinaryOpNode::AND;
+    ast->v = LogicalOpNode::AND;
     ast->children.push_back(std::move(left));
     ast->children.push_back(std::move(right));
     left = std::move(ast);
@@ -246,7 +246,7 @@ inline std::unique_ptr<AST> Parser::parse_bitwise_or_expr() {
     auto right = parse_bitwise_xor_expr();
     auto ast = std::make_unique<AST>();
     ast->node = Node::BINARY_OP;
-    ast->v = BinaryOpNode::BITWISE_OR;
+    ast->v = BitwiseOpNode::BITWISE_OR;
     ast->children.push_back(std::move(left));
     ast->children.push_back(std::move(right));
     left = std::move(ast);
@@ -262,7 +262,7 @@ inline std::unique_ptr<AST> Parser::parse_bitwise_xor_expr() {
     auto right = parse_bitwise_and_expr();
     auto ast = std::make_unique<AST>();
     ast->node = Node::BINARY_OP;
-    ast->v = BinaryOpNode::BITWISE_XOR;
+    ast->v = BitwiseOpNode::BITWISE_XOR;
     ast->children.push_back(std::move(left));
     ast->children.push_back(std::move(right));
     left = std::move(ast);
@@ -278,7 +278,7 @@ inline std::unique_ptr<AST> Parser::parse_bitwise_and_expr() {
     auto right = parse_equality_expr();
     auto ast = std::make_unique<AST>();
     ast->node = Node::BINARY_OP;
-    ast->v = BinaryOpNode::BITWISE_AND;
+    ast->v = BitwiseOpNode::BITWISE_AND;
     ast->children.push_back(std::move(left));
     ast->children.push_back(std::move(right));
     left = std::move(ast);
@@ -293,9 +293,9 @@ inline std::unique_ptr<AST> Parser::parse_equality_expr() {
     advance();
     auto ast = std::make_unique<AST>();
     if (match(Token::TOK_EQ)) {
-      ast->v = BinaryOpNode::EQ;
+      ast->v = EqualityOpNode::EQ;
     } else {
-      ast->v = BinaryOpNode::NEQ;
+      ast->v = EqualityOpNode::NEQ;
     }
     auto right = parse_relational_expr();
     ast->node = Node::BINARY_OP;
@@ -311,19 +311,19 @@ inline std::unique_ptr<AST> Parser::parse_relational_expr() {
   while (1) {
     auto ast = std::make_unique<AST>();
     if (check(Token::TOK_LESS)) {
-      ast->v = BinaryOpNode::LESS;
+      ast->v = RelationalOpNode::LESS;
       ast->lexeme = peek();
       advance();
     } else if (check(Token::TOK_LEQ)) {
-      ast->v = BinaryOpNode::LEQ;
+      ast->v = RelationalOpNode::LEQ;
       ast->lexeme = peek();
       advance();
     } else if (check(Token::TOK_GREATER)) {
-      ast->v = BinaryOpNode::GREATER;
+      ast->v = RelationalOpNode::GREATER;
       ast->lexeme = peek();
       advance();
     } else if (check(Token::TOK_GEQ)) {
-      ast->v = BinaryOpNode::GEQ;
+      ast->v = RelationalOpNode::GEQ;
       ast->lexeme = peek();
       advance();
     } else {
@@ -343,9 +343,9 @@ inline std::unique_ptr<AST> Parser::parse_additive_expr() {
     auto ast = std::make_unique<AST>();
     ast->lexeme = peek();
     if (match(Token::TOK_PLUS)) {
-      ast->v = BinaryOpNode::PLUS;
+      ast->v = AdditiveOpNode::PLUS;
     } else {
-      ast->v = BinaryOpNode::MINUS;
+      ast->v = AdditiveOpNode::MINUS;
     }
     auto right = parse_multiplicative_expr();
     ast->node = Node::BINARY_OP;
@@ -362,13 +362,13 @@ inline std::unique_ptr<AST> Parser::parse_multiplicative_expr() {
     auto ast = std::make_unique<AST>();
     ast->lexeme = peek();
     if (match(Token::TOK_MUL)) {
-      ast->v = BinaryOpNode::MUL;
+      ast->v = MultiplicativeOpNode::MUL;
     } else if (match(Token::TOK_DIV)) {
-      ast->v = BinaryOpNode::DIV;
+      ast->v = MultiplicativeOpNode::DIV;
     } else if (match(Token::TOK_DOT_MUL)) {
-      ast->v = BinaryOpNode::DOT_MUL;
+      ast->v = MultiplicativeOpNode::DOT_MUL;
     } else {
-      ast->v = BinaryOpNode::DOT_DIV;
+      ast->v = MultiplicativeOpNode::DOT_DIV;
     }
     auto right = parse_unary_expr();
     ast->node = Node::BINARY_OP;
@@ -381,6 +381,12 @@ inline std::unique_ptr<AST> Parser::parse_multiplicative_expr() {
 inline std::unique_ptr<AST> Parser::parse_unary_expr() {
   auto ast = std::make_unique<AST>();
   ast->lexeme = peek();
+  if (match(Token::TOK_PLUS)) {
+    ast->node = Node::UNARY_OP;
+    ast->v = UnaryOpNode::PLUS;
+    ast->children.push_back(parse_unary_expr());
+    return ast;
+  }
   if (match(Token::TOK_MINUS)) {
     ast->node = Node::UNARY_OP;
     ast->v = UnaryOpNode::MINUS;
