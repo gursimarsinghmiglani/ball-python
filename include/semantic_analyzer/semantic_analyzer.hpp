@@ -14,6 +14,22 @@ struct SemanticAnalyzer {
     std::cerr << "Type mismatch error in line " << root->lexeme.line_number << " at position " << root->lexeme.start;
     exit(1);
   }
+  [[noreturn]] void index_error(AST *const root) {
+    std::cerr << "Index error in line " << root->lexeme.line_number << " at position " << root->lexeme.start;
+    exit(1);
+  }
+  [[noreturn]] void argument_count_mismatch_error(AST *const root) {
+    std::cerr << "Argument count mismatch error in line " << root->lexeme.line_number << " at position " << root->lexeme.start;
+    exit(1);
+  }
+  [[noreturn]] void argument_type_mismatch_error(AST *const root) {
+    std::cerr << "Argument type mismatch error in line " << root->lexeme.line_number << " at position " << root->lexeme.start;
+    exit(1);
+  }
+  [[noreturn]] void invalid_function_call_error(AST *const root) {
+    std::cerr << "Invalid function call in line " << root->lexeme.line_number << " at position " << root->lexeme.start;
+    exit(1);
+  }
   void visit_program(AST *const node);
   void visit_decl(AST *const node);
   void visit_var_decl(AST *const node);
@@ -21,7 +37,7 @@ struct SemanticAnalyzer {
   static Type base_type_node_unify(TypeNode left, TypeNode right);
   static Type container_type_unify(const Type& left, const Type& right);
   static Type super_type_unify(const Type& left, const Type& right);
-  static Type super_base_type_unify(TypeNode left, TypeNode right);
+  static TypeNode super_base_type_node_unify(TypeNode left, TypeNode right);
   static Type super_container_type_unify(const Type& left, const Type& right);
   void visit_id(AST *const node);
   void visit_expr(AST *const node);
@@ -276,8 +292,108 @@ inline void SemanticAnalyzer::visit_additive_expr(AST *const node) {
     visit_additive_expr(node->children[1].get());
     Type left = node->children[0]->type;
     Type right = node->children[1]->type;
+    Type type = super_type_unify(left, right);
+    if (type.is_null) {
+      type_error(node);
+    }
+    node->type = type;
+  } else {
+    visit_multiplicative_expr(node);
   }
 }
+inline void SemanticAnalyzer::visit_multiplicative_expr(AST *const node) {
+  if (std::holds_alternative<MultiplicativeOpNode>(node->v)) {
+    visit_multiplicative_expr(node->children[0].get());
+    visit_multiplicative_expr(node->children[1].get());
+    Type left = node->children[0]->type;
+    Type right = node->children[1]->type;
+    Type type = super_type_unify(left, right);
+    if (type.is_null) {
+      type_error(node);
+    }
+    if (std::get<MultiplicativeOpNode>(node->v) == MultiplicativeOpNode::DOT_MUL || std::get<MultiplicativeOpNode>(node->v) == MultiplicativeOpNode::DOT_DIV) {
+      switch (type.base_type) {
+        case TypeNode::BOOL:
+        case TypeNode::INT:
+        case TypeNode::FLOAT:
+          return type_error(node);
+        }
+    }
+    node->type = type;
+  } else {
+    visit_unary_expr(node);
+  }
+}
+inline void SemanticAnalyzer::visit_unary_expr(AST *const node) {
+  if (std::holds_alternative<UnaryOpNode>(node->v)) {
+    switch (std::get<UnaryOpNode>(node->v)) {
+      case UnaryOpNode::MINUS:
+      case UnaryOpNode::PLUS:
+        visit_unary_expr(node->children[0].get());
+        node->type = node->children[0]->type;
+        break;
+      case UnaryOpNode::NOT:
+        visit_unary_expr(node->children[0].get());
+        {
+        Type type = node->children[0]->type;
+        type.type_node = TypeNode::BOOL;
+        type.base_type = TypeNode::BOOL;
+        node->type = type;
+        break;
+        }
+      default:
+        visit_unary_expr(node->children[0].get());
+        if (node->children[0]->type.base_type == TypeNode::FLOAT) {
+          type_error(node);
+        }
+        Type type = node->children[0]->type;
+        type.type_node = TypeNode::INT;
+        type.base_type = TypeNode::INT;
+        node->type = type;
+    }
+  } else {
+    visit_postfix_expr(node);
+  }
+}
+inline void SemanticAnalyzer::visit_postfix_expr(AST *const node) {
+  if (std::holds_alternative<PostfixOpNode>(node->v)) {
+    visit_postfix_expr(node->children[0].get());
+    switch (std::get<PostfixOpNode>(node->v)) {
+      case PostfixOpNode::INDEX:
+        switch (node->children[0]->type.type_node) {
+          case TypeNode::BOOL:
+          case TypeNode::INT:
+          case TypeNode::FLOAT:
+            type_error(node);
+          default:
+            if (node->children[0]->type.sizes.size() != node->children[1]->children.size()) {
+              index_error(node);
+            }
+            node->type = Type::from_type_node(node->children[0]->type.base_type);
+        }
+        break;
+      case PostfixOpNode::ARGUMENT:
+        if (std::holds_alternative<std::string>(node->children[0]->v)) {
+          std::string name = std::get<std::string>(node->children[0]->v);
+          if (!st->lookup(name)->is_function) {
+            type_error(node);
+          }
+          if (st->lookup(name)->param_types.size() != node->children[1]->children.size()) {
+            argument_count_mismatch_error(node);
+          }
+          for (int i = 0; i < node->children[1]->children.size(); i++) {
+            if (type_unify(st->lookup(name)->param_types[i], node->children[1]->children[i]->children[1]->type).is_null) {
+              argument_type_mismatch_error(node);
+            }
+          }
+          node->type = st->lookup(name)->type;
+        } else {
+          invalid_function_call_error(node);
+        }
+        break;
+      case PostfixOpNode::DOT:
+       switch (node->children[0]->type.//TODO
+    }        
 inline void SemanticAnalyzer::visit_const_decl(AST *const node) {
   std::string id = std::get<std::string>(node->children[0]->v);
   Type type;
@@ -303,7 +419,7 @@ inline Type SemanticAnalyzer::type_unify(const Type& type_left, const Type& type
     case TypeNode::INT:
     case TypeNode::FLOAT:
     case TypeNode::BOOL:
-      return base_type_node_unify(type_left, type_right);
+      return base_type_node_unify(type_left.base_type, type_right.base_type);
     case TypeNode::VECTOR:
     case TypeNode::MATRIX:
     case TypeNode::TENSOR:
@@ -347,9 +463,7 @@ inline Type SemanticAnalyzer::container_type_unify(const Type& left, const Type&
       return t;
   }
 }
-inline Type SemanticAnalyzer::super_base_type_unify(TypeNode left, TypeNode right) {
-  //TODO
-  //WE SELECT THE HIGHER TYPE (THE SUPER TYPE)
+inline TypeNode SemanticAnalyzer::super_base_type_node_unify(TypeNode left, TypeNode right) {
   switch (left) {
     case TypeNode::BOOL:
       return right;
@@ -362,5 +476,51 @@ inline Type SemanticAnalyzer::super_base_type_unify(TypeNode left, TypeNode righ
       }
     default:
       return left;
+  }
+}
+inline Type SemanticAnalyzer::super_container_type_unify(const Type& type_left, const Type& type_right) {
+  switch(type_right.type_node) {
+    case TypeNode::BOOL:
+    case TypeNode::INT:
+    case TypeNode::FLOAT:
+      return Type::error();
+  }
+  switch(type_left.type_node) {
+    case TypeNode::BOOL:
+    case TypeNode::INT:
+    case TypeNode::FLOAT:
+      return Type::error();
+  }
+  if (type_left.sizes != type_right.sizes) {
+    return Type::error();
+  }
+  switch (type_left.type_node) {
+    case TypeNode::VECTOR:
+      return type_right;
+    case TypeNode::MATRIX:
+      if (type_right.type_node == TypeNode::VECTOR) {
+        return type_left;
+      }
+      return type_right;
+    case TypeNode::TENSOR:
+      return type_left;
+  }
+  return Type::error();
+}
+inline Type SemanticAnalyzer::super_type_unify(const Type& left, const Type& right) {
+  switch (left.type_node) {
+    case TypeNode::BOOL:
+    case TypeNode::INT:
+    case TypeNode::FLOAT:
+      switch (right.type_node) {
+        case TypeNode::BOOL:
+        case TypeNode::INT:
+        case TypeNode::FLOAT:
+          return Type::from_type_node(super_base_type_node_unify(left.type_node, right.type_node));
+        default:
+          return Type::error();
+      }
+    default:
+      return super_container_type_unify(left, right);
   }
 }

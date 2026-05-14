@@ -75,7 +75,7 @@ unary_expr ::= ( PLUS | MINUS | NOT | BITWISE_NOT ) unary_expr
 
 postfix_expr ::= primary_expr { LBRACKET expr_list RBRACKET 
                               | LPAREN [ expr_list ] RPAREN 
-                              | DOT ID 
+                              | DOT ID  <<<------------------------------
                               | TRANSPOSE }
 
 primary_expr ::= INT_LIT

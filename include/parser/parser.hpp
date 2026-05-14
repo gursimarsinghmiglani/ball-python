@@ -56,7 +56,6 @@ struct Parser {
   std::unique_ptr<AST> parse_param();
   std::unique_ptr<AST> parse_block();
   std::unique_ptr<AST> parse_var_decl();
-  std::unique_ptr<AST> parse_var_def();
   std::unique_ptr<AST> parse_if_stmt();
   std::unique_ptr<AST> parse_while_stmt();
   std::unique_ptr<AST> parse_for_stmt();
@@ -576,16 +575,6 @@ inline std::unique_ptr<AST> Parser::parse_var_decl() {
     consume(Token::TOK_ASSIGN);
     ast->children.push_back(parse_expr());
   }
-  consume(Token::TOK_SEMI);
-  return ast;
-}
-inline std::unique_ptr<AST> Parser::parse_var_def() {
-  auto ast = std::make_unique<AST>();
-  ast->lexeme = peek();
-  ast->node = Node::VAR_DEF;
-  ast->children.push_back(parse_id());
-  consume(Token::TOK_ASSIGN);
-  ast->children.push_back(parse_expr());
   consume(Token::TOK_SEMI);
   return ast;
 }
