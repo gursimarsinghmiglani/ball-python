@@ -1,5 +1,2 @@
 #pragma once
-enum class LogicalOpNode {
-  OR,
-  AND
-};
+enum class LogicalOpNode { OR, AND };

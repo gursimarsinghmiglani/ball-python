@@ -15,8 +15,8 @@ struct SymbolInfo {
   std::vector<Type> param_types;
   llvm::Value *llvm_memory_address;
   SymbolInfo()
-      : type(Type::from_type_node(TypeNode::INT)), is_const(false), is_function(false),
-        is_extern(false), llvm_memory_address(nullptr) {}
+      : type(Type::from_type_node(TypeNode::INT)), is_const(false),
+        is_function(false), is_extern(false), llvm_memory_address(nullptr) {}
   SymbolInfo(Type t, bool is_const)
       : type(t), is_const(is_const), is_function(false), is_extern(false),
         llvm_memory_address(nullptr) {}

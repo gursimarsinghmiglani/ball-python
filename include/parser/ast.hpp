@@ -13,7 +13,11 @@
 #include "unary_op_node.hpp"
 struct AST {
   Node node;
-  std::variant<int64_t, double, bool, std::string, AdditiveOpNode, BitwiseOpNode, EqualityOpNode, MultiplicativeOpNode, PostfixOpNode, TypeNode, UnaryOpNode, PrintNode, RelationalOpNode, LogicalOpNode> v;
+  std::variant<int64_t, double, bool, std::string, AdditiveOpNode,
+               BitwiseOpNode, EqualityOpNode, MultiplicativeOpNode,
+               PostfixOpNode, TypeNode, UnaryOpNode, PrintNode,
+               RelationalOpNode, LogicalOpNode>
+      v;
   std::vector<std::unique_ptr<AST>> children;
   Type type;
   Lexeme lexeme;

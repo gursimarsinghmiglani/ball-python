@@ -1,5 +1,2 @@
 #pragma once
-enum class AdditiveOpNode {
-  PLUS,
-  MINUS
-};
+enum class AdditiveOpNode { PLUS, MINUS };

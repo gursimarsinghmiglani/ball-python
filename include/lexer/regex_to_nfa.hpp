@@ -110,6 +110,17 @@ inline NFA regex_to_nfa(const std::string &regex) {
             1, std::vector<std::vector<int>>(ALPHABET_SIZE + 1));
         NFA nfa2(1, 0, delta2, token_types2);
         s.push(nfa2);
+      } else if (postfix_regex[i] == '?' && escaped) {
+        std::vector<Token> token_types2(1, Token::TOK_FINAL_PLACEHOLDER);
+        std::vector<std::vector<std::vector<int>>> delta2(
+            1, std::vector<std::vector<int>>(ALPHABET_SIZE + 1));
+        for (int alpha = 0; alpha < ALPHABET_SIZE; alpha++) {
+          if (alpha != '\n') {
+            delta2[0][static_cast<unsigned char>(alpha)].push_back(0);
+          }
+        }
+        NFA nfa2(1, 0, delta2, token_types2);
+        s.push(nfa2);
       } else if (postfix_regex[i] != '\\' || escaped) {
         std::vector<Token> token_types2(2, Token::TOK_ERROR);
         token_types2[1] = Token::TOK_FINAL_PLACEHOLDER;

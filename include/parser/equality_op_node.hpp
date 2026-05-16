@@ -1,5 +1,2 @@
 #pragma once
-enum class EqualityOpNode {
-  EQ,
-  NEQ
-};
+enum class EqualityOpNode { EQ, NEQ };

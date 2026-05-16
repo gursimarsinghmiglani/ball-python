@@ -1,4 +1,3 @@
-#pragma once
 #include "ast.hpp"
 #include <iostream>
 struct Parser {
@@ -166,7 +165,7 @@ inline std::unique_ptr<AST> Parser::parse_int_lit() {
   auto ast = std::make_unique<AST>();
   ast->lexeme = peek();
   ast->node = Node::INT_LIT;
-  ast->v = std::stoll(peek().s);
+  ast->v = static_cast<int64_t>(std::stoll(peek().s));
   advance();
   return ast;
 }
@@ -288,9 +287,8 @@ inline std::unique_ptr<AST> Parser::parse_bitwise_and_expr() {
 inline std::unique_ptr<AST> Parser::parse_equality_expr() {
   auto left = parse_relational_expr();
   while (check(Token::TOK_EQ) || check(Token::TOK_NEQ)) {
-    auto lex = peek();
-    advance();
     auto ast = std::make_unique<AST>();
+    ast->lexeme = peek();
     if (match(Token::TOK_EQ)) {
       ast->v = EqualityOpNode::EQ;
     } else {
@@ -301,7 +299,6 @@ inline std::unique_ptr<AST> Parser::parse_equality_expr() {
     ast->children.push_back(std::move(left));
     ast->children.push_back(std::move(right));
     left = std::move(ast);
-    left->lexeme = lex;
   }
   return left;
 }
@@ -344,6 +341,7 @@ inline std::unique_ptr<AST> Parser::parse_additive_expr() {
     if (match(Token::TOK_PLUS)) {
       ast->v = AdditiveOpNode::PLUS;
     } else {
+      consume(Token::TOK_MINUS);
       ast->v = AdditiveOpNode::MINUS;
     }
     auto right = parse_multiplicative_expr();
@@ -411,28 +409,28 @@ inline std::unique_ptr<AST> Parser::parse_postfix_expr() {
   while (1) {
     auto ast = std::make_unique<AST>();
     ast->lexeme = peek();
-    auto right = std::make_unique<AST>();
     if (match(Token::TOK_LBRACKET)) {
       ast->v = PostfixOpNode::INDEX;
-      fill_expr_list(right);
+      ast->children.push_back(std::move(left));
+      fill_expr_list(ast);
       consume(Token::TOK_RBRACKET);
     } else if (match(Token::TOK_LPAREN)) {
       ast->v = PostfixOpNode::ARGUMENT;
+      ast->children.push_back(std::move(left));
       if (!match(Token::TOK_RPAREN)) {
-        fill_expr_list(right);
+        fill_expr_list(ast);
         consume(Token::TOK_RPAREN);
       }
     } else if (match(Token::TOK_DOT)) {
       ast->v = PostfixOpNode::DOT;
-      right = parse_id();
+      ast->children.push_back(std::move(left));
+      consume(Token::TOK_SIZE);
     } else if (match(Token::TOK_TRANSPOSE)) {
       ast->v = PostfixOpNode::TRANSPOSE;
+      ast->children.push_back(std::move(left));
     } else
       break;
     ast->node = Node::POSTFIX_OP;
-    ast->children.push_back(std::move(left));
-    if (right)
-      ast->children.push_back(std::move(right));
     left = std::move(ast);
   }
   return left;
@@ -441,7 +439,7 @@ inline std::unique_ptr<AST> Parser::parse_primary_expr() {
   auto ast = std::make_unique<AST>();
   if (check(Token::TOK_INT_LIT)) {
     ast->node = Node::INT_LIT;
-    ast->v = std::stoll(peek().s);
+    ast->v = static_cast<int64_t>(std::stoll(peek().s));
     ast->lexeme = peek();
     advance();
   } else if (check(Token::TOK_FLOAT_LIT)) {
@@ -485,7 +483,8 @@ inline void Parser::fill_expr_list(std::unique_ptr<AST> &ast) {
   }
 }
 inline std::unique_ptr<AST> Parser::parse_const_decl() {
-  if (!check(Token::TOK_CONST)) error_function();
+  if (!check(Token::TOK_CONST))
+    error_function();
   auto ast = std::make_unique<AST>();
   ast->lexeme = peek();
   advance();
@@ -500,7 +499,8 @@ inline std::unique_ptr<AST> Parser::parse_const_decl() {
   return ast;
 }
 inline std::unique_ptr<AST> Parser::parse_function_decl() {
-  if (!check(Token::TOK_FN)) error_function();
+  if (!check(Token::TOK_FN))
+    error_function();
   auto ast = std::make_unique<AST>();
   ast->lexeme = peek();
   advance();
@@ -550,7 +550,7 @@ inline std::unique_ptr<AST> Parser::parse_block() {
       ast->children.push_back(parse_for_stmt());
     } else if (check(Token::TOK_RETURN)) {
       ast->children.push_back(parse_return_stmt());
-    } else if (check(Token::TOK_PRINT)) {
+    } else if (check(Token::TOK_PRINT) || check(Token::TOK_PRINTLN)) {
       ast->children.push_back(parse_print_stmt());
     } else if (check(Token::TOK_LBRACE)) {
       ast->children.push_back(parse_block());

@@ -1,7 +1,2 @@
 #pragma once
-enum class RelationalOpNode {
-  LESS,
-  LEQ,
-  GREATER,
-  GEQ
-};
+enum class RelationalOpNode { LESS, LEQ, GREATER, GEQ };

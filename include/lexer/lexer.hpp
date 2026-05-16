@@ -94,6 +94,7 @@ const std::vector<std::string> regexes = {"fn",
                                           "tensor",
                                           "matrix",
                                           "vector",
+                                          "size",
                                           "int",
                                           "float",
                                           "bool",
@@ -141,7 +142,7 @@ const std::vector<std::string> regexes = {"fn",
                                           "]",
                                           "{",
                                           "}",
-                                          "#",
+                                          "#\\?",
                                           id_regex()};
 #define X(name) Token::name,
 const std::vector<Token> tokens = {TOKEN_LIST};
@@ -156,8 +157,7 @@ inline const std::vector<Token> tokens_truncated() {
 const DFA dfa = regex_to_dfa(regexes, tokens_truncated());
 inline std::vector<Lexeme> maximal_munch(std::string &source) {
   std::vector<Lexeme> lexemes;
-  std::vector<std::vector<bool>> failed(source.size(),
-                                        std::vector<bool>(dfa.num_states));
+  std::unordered_set<long long> failed;
   std::stack<std::pair<int, int>> s;
   int pos = 0;
   int line_number = 1;
@@ -168,9 +168,9 @@ inline std::vector<Lexeme> maximal_munch(std::string &source) {
     int last_accepting_pos = -1;
     int state = dfa.start_state;
     int start = pos;
-    while (pos < source.size() &&
-           !std::isspace(static_cast<unsigned char>(source[pos]))) {
-      if (failed[pos][state]) {
+    while (pos < source.size()) {
+      long long key = (static_cast<long long>(pos) << 32) | state;
+      if (failed.count(key)) {
         break;
       }
       unsigned char x = static_cast<unsigned char>(source[pos]);
@@ -191,7 +191,8 @@ inline std::vector<Lexeme> maximal_munch(std::string &source) {
       pos_within_line++;
     }
     while (!s.empty() && dfa.token_types[s.top().second] == Token::TOK_ERROR) {
-      failed[s.top().first][s.top().second] = true;
+      failed.insert((static_cast<long long>(s.top().first) << 32) |
+                    s.top().second);
       s.pop();
     }
     if (last_accepting_state == -1) {
@@ -202,7 +203,9 @@ inline std::vector<Lexeme> maximal_munch(std::string &source) {
     Lexeme lexeme(start, last_accepting_pos - start + 1, line_number,
                   source.substr(start, last_accepting_pos - start + 1),
                   dfa.token_types[last_accepting_state]);
-    lexemes.push_back(lexeme);
+    if (lexeme.tok != Token::TOK_COMMENT) {
+      lexemes.push_back(lexeme);
+    }
     pos = last_accepting_pos + 1;
     pos_within_line = last_accepting_pos_within_line + 1;
     while (pos < source.size() &&

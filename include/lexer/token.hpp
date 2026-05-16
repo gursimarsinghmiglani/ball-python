@@ -10,6 +10,7 @@
   X(TOK_TENSOR)                                                                \
   X(TOK_MATRIX)                                                                \
   X(TOK_VECTOR)                                                                \
+  X(TOK_SIZE)                                                                  \
   X(TOK_INT)                                                                   \
   X(TOK_FLOAT)                                                                 \
   X(TOK_BOOL)                                                                  \
