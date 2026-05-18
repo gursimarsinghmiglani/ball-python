@@ -61,7 +61,6 @@ struct Parser {
   std::unique_ptr<AST> parse_return_stmt();
   std::unique_ptr<AST> parse_print_stmt();
   std::unique_ptr<AST> parse_expr_stmt();
-  std::unique_ptr<AST> parse_extern_fn_decl();
 };
 inline std::unique_ptr<AST> Parser::parse_program() {
   auto ast = std::make_unique<AST>();
@@ -74,8 +73,6 @@ inline std::unique_ptr<AST> Parser::parse_program() {
       ast->children.push_back(parse_const_decl());
     } else if (check(Token::TOK_FN)) {
       ast->children.push_back(parse_function_decl());
-    } else if (check(Token::TOK_EXTERN)) {
-      ast->children.push_back(parse_extern_fn_decl());
     } else {
       error_function();
     }
@@ -126,6 +123,10 @@ inline std::unique_ptr<AST> Parser::parse_type() {
     auto base_type = parse_base_type()->type;
     consume(Token::TOK_COMMA);
     std::vector<int64_t> sizes;
+    sizes.push_back(std::get<int64_t>(parse_int_lit()->v));
+    consume(Token::TOK_COMMA);
+    sizes.push_back(std::get<int64_t>(parse_int_lit()->v));
+    consume(Token::TOK_COMMA);
     sizes.push_back(std::get<int64_t>(parse_int_lit()->v));
     while (match(Token::TOK_COMMA)) {
       sizes.push_back(std::get<int64_t>(parse_int_lit()->v));
@@ -593,6 +594,7 @@ inline std::unique_ptr<AST> Parser::parse_if_stmt() {
 inline std::unique_ptr<AST> Parser::parse_while_stmt() {
   auto ast = std::make_unique<AST>();
   ast->lexeme = peek();
+
   consume(Token::TOK_WHILE);
   ast->node = Node::WHILE_STMT;
   ast->children.push_back(parse_expr());
@@ -640,24 +642,6 @@ inline std::unique_ptr<AST> Parser::parse_expr_stmt() {
   ast->node = Node::EXPR_STMT;
   ast->children.push_back(parse_expr());
   ast->lexeme = ast->children[0]->lexeme;
-  consume(Token::TOK_SEMI);
-  return ast;
-}
-inline std::unique_ptr<AST> Parser::parse_extern_fn_decl() {
-  auto ast = std::make_unique<AST>();
-  ast->lexeme = peek();
-  ast->node = Node::EXTERN_DECL;
-  consume(Token::TOK_EXTERN);
-  consume(Token::TOK_FN);
-  ast->children.push_back(parse_id());
-  consume(Token::TOK_LPAREN);
-  if (!match(Token::TOK_RPAREN)) {
-    fill_param_list(ast);
-    consume(Token::TOK_RPAREN);
-  }
-  if (match(Token::TOK_ARROW)) {
-    ast->children.push_back(parse_type());
-  }
   consume(Token::TOK_SEMI);
   return ast;
 }

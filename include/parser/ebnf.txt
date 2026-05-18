@@ -3,12 +3,10 @@ program ::= { declaration } EOF
 declaration ::= var_decl 
               | const_decl
               | function_decl
-              | extern_fn_decl
 
 var_decl ::= LET ID ( COLON type [ ASSIGN expr ] | ASSIGN expr ) SEMI
 const_decl ::= CONST ID [ COLON type ] ASSIGN expr SEMI
 function_decl ::= FN ID LPAREN [ param_list ] RPAREN [ ARROW type ] block
-extern_fn_decl ::= EXTERN FN ID LPAREN [ param_list ] RPAREN [ ARROW type ] SEMI
 
 param_list ::= param { COMMA param }
 param ::= ID COLON type
@@ -40,7 +38,7 @@ expr_stmt ::= expr SEMI
 type ::= base_type
        | VECTOR LESS base_type COMMA INT_LIT GREATER
        | MATRIX LESS base_type COMMA INT_LIT COMMA INT_LIT GREATER
-       | TENSOR LESS base_type COMMA INT_LIT COMMA int_list GREATER
+       | TENSOR LESS base_type COMMA INT_LIT COMMA INT_LIT COMMA int_list GREATER
 
 int_list ::= INT_LIT { COMMA INT_LIT }
 

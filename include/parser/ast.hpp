@@ -20,5 +20,6 @@ struct AST {
       v;
   std::vector<std::unique_ptr<AST>> children;
   Type type;
+  Type ret_type;
   Lexeme lexeme;
 };

@@ -3,7 +3,6 @@ enum class Node {
   PROGRAM,
   CONST_DECL,
   FUNCTION_DECL,
-  EXTERN_DECL,
   PARAM,
   BLOCK,
   VAR_DECL,

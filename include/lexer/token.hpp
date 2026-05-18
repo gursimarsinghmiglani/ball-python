@@ -6,7 +6,6 @@
   X(TOK_PRINT)                                                                 \
   X(TOK_PRINTLN)                                                               \
   X(TOK_CONST)                                                                 \
-  X(TOK_EXTERN)                                                                \
   X(TOK_TENSOR)                                                                \
   X(TOK_MATRIX)                                                                \
   X(TOK_VECTOR)                                                                \
