@@ -47,4 +47,5 @@ private:
   llvm::AllocaInst *create_entry_block_alloca(llvm::Function *function,
                                               const std::string &var_name,
                                               llvm::Type *type);
+  llvm::Value *allocate_tensor_on_stack(const Type &type, const std::string &name = "tensor");
 };

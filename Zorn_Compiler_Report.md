@@ -1,0 +1,5729 @@
+# The Zorn Compiler Architecture Report
+
+## Chapter 1: Introduction to the Zorn Compiler
+
+### 1.1 Motivation
+The Zorn compiler is an implementation of a statically typed compiled systems programming language. It is designed to compile programs that use standard mathematical types, such as vectors and matrices, without requiring external third-party mathematical libraries. The primary goal of the compiler is to perform type checking, syntax validation, and dimension checking at compile time.
+
+### 1.2 Pipeline Architecture
+The compiler is built in C++ and uses the LLVM framework for its back end. The compilation pipeline consists of the following components:
+
+1. **Lexical Analysis:** Reads the input source code characters and groups them into tokens. The lexer uses a custom implementation of regular expression parsing, converting regular expressions to Non-deterministic Finite Automata (NFAs), then to Deterministic Finite Automata (DFAs), and finally minimizing the DFAs.
+2. **Syntax Analysis:** A recursive descent parser takes the token stream and builds an Abstract Syntax Tree (AST) based on a defined Extended Backus-Naur Form (EBNF) grammar.
+3. **Semantic Analysis:** The AST is checked for type correctness and identifier scoping. Scoping is managed using a block-level symbol table. Tensor dimension constraints are checked during this phase.
+4. **Code Generation:** The AST is traversed to emit LLVM Intermediate Representation (IR). Variables are allocated on the stack. 
+5. **Runtime Environment:** The generated object files are statically linked with a C++ runtime library (`zornrt`) that implements the underlying math operations, such as matrix multiplication and inversion.
+
+## Chapter 2: Language Specification
+
+### 2.1 Lexical Elements and Syntax
+The language syntax includes basic control flow keywords such as `if`, `else`, `while`, `for`, `in`, `return`, `print`, and `println`. Variable declarations use `let` for mutable variables and `const` for immutable variables. Function definitions use the `fn` keyword.
+
+The supported operators include:
+- Arithmetic: `+`, `-`, `*`, `/`, `%`
+- Relational: `==`, `!=`, `<`, `<=`, `>`, `>=`
+- Logical: `and`, `or`, `not`, `&&`, `||`, `!`
+- Bitwise: `&`, `|`, `^`, `~`
+- Matrix-specific operations: `@` for matrix multiplication, `.inv` for matrix inversion, and `.T` or `.transpose` for matrix transposition.
+
+### 2.2 Data Types
+The type system includes base types and container types.
+
+Base types include:
+- `int`: 64-bit signed integer.
+- `float`: 64-bit double-precision floating-point number.
+- `bool`: 1-bit boolean value.
+- `string`: String literal format.
+
+Container types specify their dimensions directly in the type signature. These dimensions must be known at compile time.
+- Vectors are declared using `vector<BaseType, Size>`. For example, a vector of three integers is `vector<int, 3>`.
+- Matrices are declared using `matrix<BaseType, Rows, Columns>`. For example, a 4 by 4 float matrix is `matrix<float, 4, 4>`.
+- Tensors are declared using `tensor<BaseType, Dim1, Dim2, ...>`. 
+
+### 2.3 Mathematical Semantics and Promotion
+Type unification rules govern mathematical operations. If an expression includes both an `int` and a `float`, the `int` is promoted to a `float`. This rule applies to scalar values and extends to the elements within container types.
+
+In operations involving matrices and vectors, the compiler checks the dimension parameters during the semantic analysis phase. Assignment requires the dimensions of the assigned value to exactly match the declared dimensions of the variable.
+
+## Chapter 3: Lexical Analysis
+
+### 3.1 Overview of the Scanner
+The lexical analyzer processes the input character string into tokens. Tokens are matched against predefined regular expressions.
+
+### 3.2 Automata Implementations
+The regular expression parsing is implemented through three transformations:
+
+1. **Regex to NFA:** Implemented in `regex_to_nfa.hpp`, this uses Thompson's Construction. A regular expression string is converted to postfix notation. A stack is then used to combine basic NFA states into larger NFAs using concatenation, alternation, and Kleene closures.
+2. **NFA to DFA:** Implemented in `dfa.hpp`, the Subset Construction algorithm groups states in the NFA connected by epsilon transitions into single states in a DFA. This removes non-determinism so the scanner can process each character with exactly one state transition.
+3. **DFA Minimization:** The DFA is minimized using a Disjoint Set Union (DSU) structure to group indistinguishable states together. This produces a state machine with the minimum number of necessary states to recognize the tokens.
+
+### 3.3 Token Priority
+Tokens are defined in an X-macro list in `token.hpp`. When an input string matches multiple regular expressions, the scanner uses a defined priority list in `token_priority.hpp`. Keywords are prioritized over generic identifiers. The scanner applies the maximal munch rule, matching the longest possible valid string for each token before proceeding.
+
+## Chapter 4: Syntax Analysis
+
+### 4.1 Parser Structure
+The parser is a recursive descent parser implemented in `parser.hpp`. It processes the token stream from the lexer and verifies it against the language's EBNF grammar.
+
+### 4.2 Grammar and AST Generation
+The EBNF grammar defines the required sequence of tokens for statements and expressions. The grammar rules inherently structure operator precedence. The `additive_expr` rule invokes `multiplicative_expr`, ensuring that multiplication tokens are evaluated before addition tokens in the hierarchy.
+
+The parser creates AST nodes as it descends through the parsing rules. The AST nodes use a generic structure with a `Node` enum and a `std::variant` payload to store node-specific data such as integer values, string literals, or specific operator types. Children of AST nodes are stored using `std::vector<std::unique_ptr<AST>>` for automatic memory management.
+
+If the parser encounters a token that does not fit the expected grammar rule, it outputs an error message with the line and column number and halts the compilation process.
+
+## Chapter 5: Semantic Analysis
+
+### 5.1 Scoping and Symbol Table
+The semantic analyzer traverses the AST to verify type rules and identifier references.
+
+Variable scoping is managed using a block-level symbol table implemented in `symbol_table.hpp`. The table uses a stack of `std::unordered_map` structures. When the analyzer enters a new block, a new map is pushed to the stack. Identifiers are resolved by checking the top map first and proceeding downwards. When a block ends, its map is popped from the stack, removing those local variables from scope.
+
+### 5.2 Type Checking
+The semantic analyzer checks the types of all operands in expressions. For container types like vectors and matrices, it compares the dimensional parameters of the operands.
+
+For example, when validating a matrix addition, the analyzer checks the `Rows` and `Columns` properties of both operands. If they do not match, the compiler throws a semantic error. It also handles type promotion during these checks, casting the AST node of an integer type to a float type if the other operand is a float type.
+
+## Chapter 6: Code Generation (Backend)
+
+### 6.1 LLVM Backend
+The compiler uses the LLVM framework to generate Intermediate Representation (IR). The `codegen.cpp` module traverses the verified AST and translates each node using the `llvm::IRBuilder`. 
+
+### 6.2 Translating Types and Operations
+Basic data types map to standard LLVM types:
+- `int` maps to `llvm::Type::getInt64Ty`.
+- `float` maps to `llvm::Type::getDoubleTy`.
+- `bool` maps to `llvm::Type::getInt1Ty`.
+
+Basic arithmetic operations use `CreateAdd`, `CreateFAdd`, `CreateMul`, `CreateFMul`, etc., depending on the type of the operands. Control flow constructs like `if` and `while` loops are translated into multiple LLVM Basic Blocks with conditional branch instructions linking them.
+
+### 6.3 Stack Memory Allocation
+The memory model of Zorn relies entirely on stack allocation. The compiler does not use dynamic heap allocation (e.g., `malloc` or `free`).
+
+When a variable is declared, the compiler emits an LLVM `alloca` instruction in the entry block of the function. For primitive variables, LLVM's optimization passes promote these stack variables into CPU registers where possible.
+
+For container types (vectors, matrices, tensors), the compiler emits `alloca` instructions that reserve stack memory for the exact size of the multi-dimensional structure. The dimensions of the container type determine the size of the allocation.
+
+### 6.4 Struct Return and Function Calls
+When a function returns a container type, it cannot be passed via standard registers because of its size. The compiler implements a Struct Return (`sret`) pattern.
+
+When compiling a function that returns a tensor, the compiler adds a hidden first parameter to the function signature. This parameter is an out-pointer. The caller function allocates space on its own stack for the tensor and passes a pointer to this space as the first argument. The called function writes the result directly to this memory location. The function's actual LLVM return type is set to `void`.
+
+Operations such as matrix multiplication are implemented as calls to the native C++ runtime library. The compiler allocates stack space for the result and calls the runtime function, passing the out-pointer along with pointers to the operands.
+
+## Chapter 7: The Zorn Runtime Environment
+
+### 7.1 Runtime Library Structure
+The compiler relies on a static runtime library (`zornrt`) implemented in `zorn_runtime.cpp`. This library contains the implementation of the mathematical operations. The compiled Zorn program is linked against this static library during the final compilation step.
+
+### 7.2 The ZornTensor Struct
+The runtime operations interface with a single structure format for all container types:
+
+```cpp
+extern "C" {
+    struct ZornTensor {
+        int64_t ndim;          // Number of dimensions
+        int64_t *sizes;        // Array of dimension sizes
+        double *data;          // Flat array of data elements
+    };
+}
+```
+
+The memory for this structure, the `sizes` array, and the `data` array is completely stack-allocated by the LLVM IR emitted during the code generation phase. The runtime functions receive pointers to these existing structures and only read or write to the pre-allocated memory.
+
+### 7.3 Multi-Dimensional Index Flattening
+User-defined access to multi-dimensional data elements (e.g., `A[1, 2]`) is translated to a 1D offset into the `data` array. The flat offset is calculated by multiplying each coordinate by the products of the sizes of the subsequent dimensions.
+
+### 7.4 Mathematical Functions
+The runtime implements operations such as matrix multiplication (`zorn_mat_mul`) and matrix inversion (`zorn_inverse`). Matrix inversion is implemented using Gaussian elimination. Element-wise operations like addition and subtraction iterate linearly across the `data` array of the input tensors and write the result into the provided out-pointer's `data` array.
+
+## Chapter 8: Test Suite and Execution Outputs
+
+The following sections demonstrate the Zorn compiler's capabilities by executing a suite of standard algorithms and mathematical operations. Each test showcases the corresponding source code alongside its compiled runtime output.
+
+### 8.1 fibonacci.zorn
+#### Source Code
+```text
+fn fib(n: int) -> int {
+  if n == 0 or n == 1 {
+    return n;
+  }
+  return fib(n - 1) + fib(n - 2);
+}
+fn main() {
+  println fib(10);
+}
+```
+#### Execution Output
+```
+55
+```
+
+### 8.2 gcd.zorn
+#### Source Code
+```text
+fn gcd(x: int, y: int) -> int {
+  while y > 0 {
+    let temp = x;
+    x = y;
+    y = temp % y;
+  }
+  return x;
+}
+fn main() {
+  let x = 30;
+  let y = 70;
+  print gcd(x, y);
+}
+```
+#### Execution Output
+```
+10
+```
+
+### 8.3 matrix.zorn
+#### Source Code
+```text
+fn inverse_mapping(A: const matrix<float, 3, 3>, x: const vector<float, 3>) -> vector<float, 3> {
+  let x_prime: matrix<float, 3, 1> = matrix<float, 3, 1>(0.0);
+  for i in range(0, 3) {
+    x_prime[i, 0] = x[i];
+  }
+  let y_prime = A.inv @ x_prime;
+  let y: vector<float, 3> = vector<float, 3>(0.0);
+  for i in range(0, 3) {
+    y[i] = y_prime[i, 0];
+  }
+  return y;
+}
+fn main() {
+  const A = [[3, 2, 4], [5, 2, 0], [0, 0, 1]];
+  const x = [1, 2, 3];
+  const y = inverse_mapping(A, x);
+  for elem in y {
+    print elem;
+    print " ";
+  }
+}
+```
+#### Execution Output
+```
+6.5 -15.25 3
+```
+
+### 8.4 prime_sieve.zorn
+#### Source Code
+```text
+const N = 100;
+fn print_primes() {
+  let v = vector<bool, 101>(true);
+  for i in range(2, N + 1) {
+    if v[i] {
+      print i;
+      print " ";
+      for j in range(2 * i, N + 1, i) {
+        v[j] = false;
+      }
+    }
+  }
+}
+fn main() {
+  print_primes();
+}
+```
+#### Execution Output
+```
+2 3 5 7 11 13 17 19 23 29 31 37 41 43 47 53 59 61 67 71 73 79 83 89 97
+```
+
+### 8.5 quicksort.zorn
+#### Source Code
+```text
+fn partition(v: vector<int, 15>, lo: int, hi: int) -> int {
+  let j = lo;
+  for i in range(lo + 1, hi) {
+    if v[i] <= v[lo] {
+      let temp = v[j + 1];
+      v[j + 1] = v[i];
+      v[i] = temp;
+      j = j + 1;
+    }
+  }
+  let temp = v[lo];
+  v[lo] = v[j];
+  v[j] = temp;
+  return j;
+}
+fn quicksort_helper(v: vector<int, 15>, lo: int, hi: int) {
+  if lo == hi {
+    return;
+  }
+  let j = partition(v, lo, hi);
+  quicksort_helper(v, lo, j);
+  quicksort_helper(v, j + 1, hi);
+}
+fn quicksort(v: vector<int, 15>) {
+  quicksort_helper(v, 0, 15);
+}
+fn main() {
+  let v: vector<int, 15> = [4, 2, 5, 1, 6, 4, 4, 2, 6, 1, 7, 19, 12, -1, 13];
+  quicksort(v);
+  for x in v {
+    print x;
+    print " ";
+  }
+}
+```
+#### Execution Output
+```
+-1 1 1 2 2 4 4 4 5 6 6 7 12 13 19
+```
+
+
+## Chapter 9: Conclusion
+
+### 9.1 Summary
+The Zorn Compiler provides a complete compilation pipeline for a custom language specification. It features a custom lexical analyzer using automata algorithms, a recursive descent parser, and a semantic analyzer for dimension checking. The back end uses LLVM IR to generate machine code. The compiler uses a 100% stack-allocated memory model, allocating all variables and container types on the stack and passing data using the struct return pattern to functions in the static C++ runtime library.
+
+### 9.2 Current Limitations
+The language specification is currently limited to basic control flow and specific mathematical operations. The container dimensions must be known at compile time to support the strict stack allocation model. Basic operations between tensors require the dimensions of both operands to match exactly. There is currently no support for broadcasting operations where differing dimensions are implicitly repeated.
+
+# Chapter 10: Source Code Appendix (The Minix Format)
+
+The following section contains the complete source code of the Zorn compiler, formatted with continuous global line numbers.
+
+```cpp
++-----------------------------------------------------------------------------+
+| CMakeFiles/4.0.1/CompilerIdCXX/CMakeCXXCompilerId.cpp                        |
++-----------------------------------------------------------------------------+
+
+0001  /* This source file must have a .cpp extension so that all C++ compilers
+0002     recognize the extension without flags.  Borland does not know .cxx for
+0003     example.  */
+0004  #ifndef __cplusplus
+0005  #error "A C compiler has been selected for C++."
+0006  #endif
+0007  
+0008  #if !defined(__has_include)
+0009  /* If the compiler does not have __has_include, pretend the answer is
+0010     always no.  */
+0011  #define __has_include(x) 0
+0012  #endif
+0013  
+0014  /* Version number components: V=Version, R=Revision, P=Patch
+0015     Version date components:   YYYY=Year, MM=Month,   DD=Day  */
+0016  
+0017  #if defined(__INTEL_COMPILER) || defined(__ICC)
+0018  #define COMPILER_ID "Intel"
+0019  #if defined(_MSC_VER)
+0020  #define SIMULATE_ID "MSVC"
+0021  #endif
+0022  #if defined(__GNUC__)
+0023  #define SIMULATE_ID "GNU"
+0024  #endif
+0025  /* __INTEL_COMPILER = VRP prior to 2021, and then VVVV for 2021 and later,
+0026     except that a few beta releases use the old format with V=2021.  */
+0027  #if __INTEL_COMPILER < 2021 || __INTEL_COMPILER == 202110 ||                   \
+0028      __INTEL_COMPILER == 202111
+0029  #define COMPILER_VERSION_MAJOR DEC(__INTEL_COMPILER / 100)
+0030  #define COMPILER_VERSION_MINOR DEC(__INTEL_COMPILER / 10 % 10)
+0031  #if defined(__INTEL_COMPILER_UPDATE)
+0032  #define COMPILER_VERSION_PATCH DEC(__INTEL_COMPILER_UPDATE)
+0033  #else
+0034  #define COMPILER_VERSION_PATCH DEC(__INTEL_COMPILER % 10)
+0035  #endif
+0036  #else
+0037  #define COMPILER_VERSION_MAJOR DEC(__INTEL_COMPILER)
+0038  #define COMPILER_VERSION_MINOR DEC(__INTEL_COMPILER_UPDATE)
+0039  /* The third version component from --version is an update index,
+0040     but no macro is provided for it.  */
+0041  #define COMPILER_VERSION_PATCH DEC(0)
+0042  #endif
+0043  #if defined(__INTEL_COMPILER_BUILD_DATE)
+0044  /* __INTEL_COMPILER_BUILD_DATE = YYYYMMDD */
+0045  #define COMPILER_VERSION_TWEAK DEC(__INTEL_COMPILER_BUILD_DATE)
+0046  #endif
+0047  #if defined(_MSC_VER)
+0048  /* _MSC_VER = VVRR */
+0049  #define SIMULATE_VERSION_MAJOR DEC(_MSC_VER / 100)
+0050  #define SIMULATE_VERSION_MINOR DEC(_MSC_VER % 100)
+0051  #endif
+0052  #if defined(__GNUC__)
+0053  #define SIMULATE_VERSION_MAJOR DEC(__GNUC__)
+0054  #elif defined(__GNUG__)
+0055  #define SIMULATE_VERSION_MAJOR DEC(__GNUG__)
+0056  #endif
+0057  #if defined(__GNUC_MINOR__)
+0058  #define SIMULATE_VERSION_MINOR DEC(__GNUC_MINOR__)
+0059  #endif
+0060  #if defined(__GNUC_PATCHLEVEL__)
+0061  #define SIMULATE_VERSION_PATCH DEC(__GNUC_PATCHLEVEL__)
+0062  #endif
+0063  
+0064  #elif (defined(__clang__) && defined(__INTEL_CLANG_COMPILER)) ||               \
+0065      defined(__INTEL_LLVM_COMPILER)
+0066  #define COMPILER_ID "IntelLLVM"
+0067  #if defined(_MSC_VER)
+0068  #define SIMULATE_ID "MSVC"
+0069  #endif
+0070  #if defined(__GNUC__)
+0071  #define SIMULATE_ID "GNU"
+0072  #endif
+0073  /* __INTEL_LLVM_COMPILER = VVVVRP prior to 2021.2.0, VVVVRRPP for 2021.2.0 and
+0074   * later.  Look for 6 digit vs. 8 digit version number to decide encoding.
+0075   * VVVV is no smaller than the current year when a version is released.
+0076   */
+0077  #if __INTEL_LLVM_COMPILER < 1000000L
+0078  #define COMPILER_VERSION_MAJOR DEC(__INTEL_LLVM_COMPILER / 100)
+0079  #define COMPILER_VERSION_MINOR DEC(__INTEL_LLVM_COMPILER / 10 % 10)
+0080  #define COMPILER_VERSION_PATCH DEC(__INTEL_LLVM_COMPILER % 10)
+0081  #else
+0082  #define COMPILER_VERSION_MAJOR DEC(__INTEL_LLVM_COMPILER / 10000)
+0083  #define COMPILER_VERSION_MINOR DEC(__INTEL_LLVM_COMPILER / 100 % 100)
+0084  #define COMPILER_VERSION_PATCH DEC(__INTEL_LLVM_COMPILER % 100)
+0085  #endif
+0086  #if defined(_MSC_VER)
+0087  /* _MSC_VER = VVRR */
+0088  #define SIMULATE_VERSION_MAJOR DEC(_MSC_VER / 100)
+0089  #define SIMULATE_VERSION_MINOR DEC(_MSC_VER % 100)
+0090  #endif
+0091  #if defined(__GNUC__)
+0092  #define SIMULATE_VERSION_MAJOR DEC(__GNUC__)
+0093  #elif defined(__GNUG__)
+0094  #define SIMULATE_VERSION_MAJOR DEC(__GNUG__)
+0095  #endif
+0096  #if defined(__GNUC_MINOR__)
+0097  #define SIMULATE_VERSION_MINOR DEC(__GNUC_MINOR__)
+0098  #endif
+0099  #if defined(__GNUC_PATCHLEVEL__)
+0100  #define SIMULATE_VERSION_PATCH DEC(__GNUC_PATCHLEVEL__)
+0101  #endif
+0102  
+0103  #elif defined(__PATHCC__)
+0104  #define COMPILER_ID "PathScale"
+0105  #define COMPILER_VERSION_MAJOR DEC(__PATHCC__)
+0106  #define COMPILER_VERSION_MINOR DEC(__PATHCC_MINOR__)
+0107  #if defined(__PATHCC_PATCHLEVEL__)
+0108  #define COMPILER_VERSION_PATCH DEC(__PATHCC_PATCHLEVEL__)
+0109  #endif
+0110  
+0111  #elif defined(__BORLANDC__) && defined(__CODEGEARC_VERSION__)
+0112  #define COMPILER_ID "Embarcadero"
+0113  #define COMPILER_VERSION_MAJOR HEX(__CODEGEARC_VERSION__ >> 24 & 0x00FF)
+0114  #define COMPILER_VERSION_MINOR HEX(__CODEGEARC_VERSION__ >> 16 & 0x00FF)
+0115  #define COMPILER_VERSION_PATCH DEC(__CODEGEARC_VERSION__ & 0xFFFF)
+0116  
+0117  #elif defined(__BORLANDC__)
+0118  #define COMPILER_ID "Borland"
+0119  /* __BORLANDC__ = 0xVRR */
+0120  #define COMPILER_VERSION_MAJOR HEX(__BORLANDC__ >> 8)
+0121  #define COMPILER_VERSION_MINOR HEX(__BORLANDC__ & 0xFF)
+0122  
+0123  #elif defined(__WATCOMC__) && __WATCOMC__ < 1200
+0124  #define COMPILER_ID "Watcom"
+0125  /* __WATCOMC__ = VVRR */
+0126  #define COMPILER_VERSION_MAJOR DEC(__WATCOMC__ / 100)
+0127  #define COMPILER_VERSION_MINOR DEC((__WATCOMC__ / 10) % 10)
+0128  #if (__WATCOMC__ % 10) > 0
+0129  #define COMPILER_VERSION_PATCH DEC(__WATCOMC__ % 10)
+0130  #endif
+0131  
+0132  #elif defined(__WATCOMC__)
+0133  #define COMPILER_ID "OpenWatcom"
+0134  /* __WATCOMC__ = VVRP + 1100 */
+0135  #define COMPILER_VERSION_MAJOR DEC((__WATCOMC__ - 1100) / 100)
+0136  #define COMPILER_VERSION_MINOR DEC((__WATCOMC__ / 10) % 10)
+0137  #if (__WATCOMC__ % 10) > 0
+0138  #define COMPILER_VERSION_PATCH DEC(__WATCOMC__ % 10)
+0139  #endif
+0140  
+0141  #elif defined(__SUNPRO_CC)
+0142  #define COMPILER_ID "SunPro"
+0143  #if __SUNPRO_CC >= 0x5100
+0144  /* __SUNPRO_CC = 0xVRRP */
+0145  #define COMPILER_VERSION_MAJOR HEX(__SUNPRO_CC >> 12)
+0146  #define COMPILER_VERSION_MINOR HEX(__SUNPRO_CC >> 4 & 0xFF)
+0147  #define COMPILER_VERSION_PATCH HEX(__SUNPRO_CC & 0xF)
+0148  #else
+0149  /* __SUNPRO_CC = 0xVRP */
+0150  #define COMPILER_VERSION_MAJOR HEX(__SUNPRO_CC >> 8)
+0151  #define COMPILER_VERSION_MINOR HEX(__SUNPRO_CC >> 4 & 0xF)
+0152  #define COMPILER_VERSION_PATCH HEX(__SUNPRO_CC & 0xF)
+0153  #endif
+0154  
+0155  #elif defined(__HP_aCC)
+0156  #define COMPILER_ID "HP"
+0157  /* __HP_aCC = VVRRPP */
+0158  #define COMPILER_VERSION_MAJOR DEC(__HP_aCC / 10000)
+0159  #define COMPILER_VERSION_MINOR DEC(__HP_aCC / 100 % 100)
+0160  #define COMPILER_VERSION_PATCH DEC(__HP_aCC % 100)
+0161  
+0162  #elif defined(__DECCXX)
+0163  #define COMPILER_ID "Compaq"
+0164  /* __DECCXX_VER = VVRRTPPPP */
+0165  #define COMPILER_VERSION_MAJOR DEC(__DECCXX_VER / 10000000)
+0166  #define COMPILER_VERSION_MINOR DEC(__DECCXX_VER / 100000 % 100)
+0167  #define COMPILER_VERSION_PATCH DEC(__DECCXX_VER % 10000)
+0168  
+0169  #elif defined(__IBMCPP__) && defined(__COMPILER_VER__)
+0170  #define COMPILER_ID "zOS"
+0171  /* __IBMCPP__ = VRP */
+0172  #define COMPILER_VERSION_MAJOR DEC(__IBMCPP__ / 100)
+0173  #define COMPILER_VERSION_MINOR DEC(__IBMCPP__ / 10 % 10)
+0174  #define COMPILER_VERSION_PATCH DEC(__IBMCPP__ % 10)
+0175  
+0176  #elif defined(__open_xl__) && defined(__clang__)
+0177  #define COMPILER_ID "IBMClang"
+0178  #define COMPILER_VERSION_MAJOR DEC(__open_xl_version__)
+0179  #define COMPILER_VERSION_MINOR DEC(__open_xl_release__)
+0180  #define COMPILER_VERSION_PATCH DEC(__open_xl_modification__)
+0181  #define COMPILER_VERSION_TWEAK DEC(__open_xl_ptf_fix_level__)
+0182  #define COMPILER_VERSION_INTERNAL_STR __clang_version__
+0183  
+0184  #elif defined(__ibmxl__) && defined(__clang__)
+0185  #define COMPILER_ID "XLClang"
+0186  #define COMPILER_VERSION_MAJOR DEC(__ibmxl_version__)
+0187  #define COMPILER_VERSION_MINOR DEC(__ibmxl_release__)
+0188  #define COMPILER_VERSION_PATCH DEC(__ibmxl_modification__)
+0189  #define COMPILER_VERSION_TWEAK DEC(__ibmxl_ptf_fix_level__)
+0190  
+0191  #elif defined(__IBMCPP__) && !defined(__COMPILER_VER__) && __IBMCPP__ >= 800
+0192  #define COMPILER_ID "XL"
+0193  /* __IBMCPP__ = VRP */
+0194  #define COMPILER_VERSION_MAJOR DEC(__IBMCPP__ / 100)
+0195  #define COMPILER_VERSION_MINOR DEC(__IBMCPP__ / 10 % 10)
+0196  #define COMPILER_VERSION_PATCH DEC(__IBMCPP__ % 10)
+0197  
+0198  #elif defined(__IBMCPP__) && !defined(__COMPILER_VER__) && __IBMCPP__ < 800
+0199  #define COMPILER_ID "VisualAge"
+0200  /* __IBMCPP__ = VRP */
+0201  #define COMPILER_VERSION_MAJOR DEC(__IBMCPP__ / 100)
+0202  #define COMPILER_VERSION_MINOR DEC(__IBMCPP__ / 10 % 10)
+0203  #define COMPILER_VERSION_PATCH DEC(__IBMCPP__ % 10)
+0204  
+0205  #elif defined(__NVCOMPILER)
+0206  #define COMPILER_ID "NVHPC"
+0207  #define COMPILER_VERSION_MAJOR DEC(__NVCOMPILER_MAJOR__)
+0208  #define COMPILER_VERSION_MINOR DEC(__NVCOMPILER_MINOR__)
+0209  #if defined(__NVCOMPILER_PATCHLEVEL__)
+0210  #define COMPILER_VERSION_PATCH DEC(__NVCOMPILER_PATCHLEVEL__)
+0211  #endif
+0212  
+0213  #elif defined(__PGI)
+0214  #define COMPILER_ID "PGI"
+0215  #define COMPILER_VERSION_MAJOR DEC(__PGIC__)
+0216  #define COMPILER_VERSION_MINOR DEC(__PGIC_MINOR__)
+0217  #if defined(__PGIC_PATCHLEVEL__)
+0218  #define COMPILER_VERSION_PATCH DEC(__PGIC_PATCHLEVEL__)
+0219  #endif
+0220  
+0221  #elif defined(__clang__) && defined(__cray__)
+0222  #define COMPILER_ID "CrayClang"
+0223  #define COMPILER_VERSION_MAJOR DEC(__cray_major__)
+0224  #define COMPILER_VERSION_MINOR DEC(__cray_minor__)
+0225  #define COMPILER_VERSION_PATCH DEC(__cray_patchlevel__)
+0226  #define COMPILER_VERSION_INTERNAL_STR __clang_version__
+0227  
+0228  #elif defined(_CRAYC)
+0229  #define COMPILER_ID "Cray"
+0230  #define COMPILER_VERSION_MAJOR DEC(_RELEASE_MAJOR)
+0231  #define COMPILER_VERSION_MINOR DEC(_RELEASE_MINOR)
+0232  
+0233  #elif defined(__TI_COMPILER_VERSION__)
+0234  #define COMPILER_ID "TI"
+0235  /* __TI_COMPILER_VERSION__ = VVVRRRPPP */
+0236  #define COMPILER_VERSION_MAJOR DEC(__TI_COMPILER_VERSION__ / 1000000)
+0237  #define COMPILER_VERSION_MINOR DEC(__TI_COMPILER_VERSION__ / 1000 % 1000)
+0238  #define COMPILER_VERSION_PATCH DEC(__TI_COMPILER_VERSION__ % 1000)
+0239  
+0240  #elif defined(__CLANG_FUJITSU)
+0241  #define COMPILER_ID "FujitsuClang"
+0242  #define COMPILER_VERSION_MAJOR DEC(__FCC_major__)
+0243  #define COMPILER_VERSION_MINOR DEC(__FCC_minor__)
+0244  #define COMPILER_VERSION_PATCH DEC(__FCC_patchlevel__)
+0245  #define COMPILER_VERSION_INTERNAL_STR __clang_version__
+0246  
+0247  #elif defined(__FUJITSU)
+0248  #define COMPILER_ID "Fujitsu"
+0249  #if defined(__FCC_version__)
+0250  #define COMPILER_VERSION __FCC_version__
+0251  #elif defined(__FCC_major__)
+0252  #define COMPILER_VERSION_MAJOR DEC(__FCC_major__)
+0253  #define COMPILER_VERSION_MINOR DEC(__FCC_minor__)
+0254  #define COMPILER_VERSION_PATCH DEC(__FCC_patchlevel__)
+0255  #endif
+0256  #if defined(__fcc_version)
+0257  #define COMPILER_VERSION_INTERNAL DEC(__fcc_version)
+0258  #elif defined(__FCC_VERSION)
+0259  #define COMPILER_VERSION_INTERNAL DEC(__FCC_VERSION)
+0260  #endif
+0261  
+0262  #elif defined(__ghs__)
+0263  #define COMPILER_ID "GHS"
+0264  /* __GHS_VERSION_NUMBER = VVVVRP */
+0265  #ifdef __GHS_VERSION_NUMBER
+0266  #define COMPILER_VERSION_MAJOR DEC(__GHS_VERSION_NUMBER / 100)
+0267  #define COMPILER_VERSION_MINOR DEC(__GHS_VERSION_NUMBER / 10 % 10)
+0268  #define COMPILER_VERSION_PATCH DEC(__GHS_VERSION_NUMBER % 10)
+0269  #endif
+0270  
+0271  #elif defined(__TASKING__)
+0272  #define COMPILER_ID "Tasking"
+0273  #define COMPILER_VERSION_MAJOR DEC(__VERSION__ / 1000)
+0274  #define COMPILER_VERSION_MINOR DEC(__VERSION__ % 100)
+0275  #define COMPILER_VERSION_INTERNAL DEC(__VERSION__)
+0276  
+0277  #elif defined(__ORANGEC__)
+0278  #define COMPILER_ID "OrangeC"
+0279  #define COMPILER_VERSION_MAJOR DEC(__ORANGEC_MAJOR__)
+0280  #define COMPILER_VERSION_MINOR DEC(__ORANGEC_MINOR__)
+0281  #define COMPILER_VERSION_PATCH DEC(__ORANGEC_PATCHLEVEL__)
+0282  
+0283  #elif defined(__SCO_VERSION__)
+0284  #define COMPILER_ID "SCO"
+0285  
+0286  #elif defined(__ARMCC_VERSION) && !defined(__clang__)
+0287  #define COMPILER_ID "ARMCC"
+0288  #if __ARMCC_VERSION >= 1000000
+0289  /* __ARMCC_VERSION = VRRPPPP */
+0290  #define COMPILER_VERSION_MAJOR DEC(__ARMCC_VERSION / 1000000)
+0291  #define COMPILER_VERSION_MINOR DEC(__ARMCC_VERSION / 10000 % 100)
+0292  #define COMPILER_VERSION_PATCH DEC(__ARMCC_VERSION % 10000)
+0293  #else
+0294  /* __ARMCC_VERSION = VRPPPP */
+0295  #define COMPILER_VERSION_MAJOR DEC(__ARMCC_VERSION / 100000)
+0296  #define COMPILER_VERSION_MINOR DEC(__ARMCC_VERSION / 10000 % 10)
+0297  #define COMPILER_VERSION_PATCH DEC(__ARMCC_VERSION % 10000)
+0298  #endif
+0299  
+0300  #elif defined(__clang__) && defined(__apple_build_version__)
+0301  #define COMPILER_ID "AppleClang"
+0302  #if defined(_MSC_VER)
+0303  #define SIMULATE_ID "MSVC"
+0304  #endif
+0305  #define COMPILER_VERSION_MAJOR DEC(__clang_major__)
+0306  #define COMPILER_VERSION_MINOR DEC(__clang_minor__)
+0307  #define COMPILER_VERSION_PATCH DEC(__clang_patchlevel__)
+0308  #if defined(_MSC_VER)
+0309  /* _MSC_VER = VVRR */
+0310  #define SIMULATE_VERSION_MAJOR DEC(_MSC_VER / 100)
+0311  #define SIMULATE_VERSION_MINOR DEC(_MSC_VER % 100)
+0312  #endif
+0313  #define COMPILER_VERSION_TWEAK DEC(__apple_build_version__)
+0314  
+0315  #elif defined(__clang__) && defined(__ARMCOMPILER_VERSION)
+0316  #define COMPILER_ID "ARMClang"
+0317  #define COMPILER_VERSION_MAJOR DEC(__ARMCOMPILER_VERSION / 1000000)
+0318  #define COMPILER_VERSION_MINOR DEC(__ARMCOMPILER_VERSION / 10000 % 100)
+0319  #define COMPILER_VERSION_PATCH DEC(__ARMCOMPILER_VERSION / 100 % 100)
+0320  #define COMPILER_VERSION_INTERNAL DEC(__ARMCOMPILER_VERSION)
+0321  
+0322  #elif defined(__clang__) && defined(__ti__)
+0323  #define COMPILER_ID "TIClang"
+0324  #define COMPILER_VERSION_MAJOR DEC(__ti_major__)
+0325  #define COMPILER_VERSION_MINOR DEC(__ti_minor__)
+0326  #define COMPILER_VERSION_PATCH DEC(__ti_patchlevel__)
+0327  #define COMPILER_VERSION_INTERNAL DEC(__ti_version__)
+0328  
+0329  #elif defined(__clang__)
+0330  #define COMPILER_ID "Clang"
+0331  #if defined(_MSC_VER)
+0332  #define SIMULATE_ID "MSVC"
+0333  #endif
+0334  #define COMPILER_VERSION_MAJOR DEC(__clang_major__)
+0335  #define COMPILER_VERSION_MINOR DEC(__clang_minor__)
+0336  #define COMPILER_VERSION_PATCH DEC(__clang_patchlevel__)
+0337  #if defined(_MSC_VER)
+0338  /* _MSC_VER = VVRR */
+0339  #define SIMULATE_VERSION_MAJOR DEC(_MSC_VER / 100)
+0340  #define SIMULATE_VERSION_MINOR DEC(_MSC_VER % 100)
+0341  #endif
+0342  
+0343  #elif defined(__LCC__) &&                                                      \
+0344      (defined(__GNUC__) || defined(__GNUG__) || defined(__MCST__))
+0345  #define COMPILER_ID "LCC"
+0346  #define COMPILER_VERSION_MAJOR DEC(__LCC__ / 100)
+0347  #define COMPILER_VERSION_MINOR DEC(__LCC__ % 100)
+0348  #if defined(__LCC_MINOR__)
+0349  #define COMPILER_VERSION_PATCH DEC(__LCC_MINOR__)
+0350  #endif
+0351  #if defined(__GNUC__) && defined(__GNUC_MINOR__)
+0352  #define SIMULATE_ID "GNU"
+0353  #define SIMULATE_VERSION_MAJOR DEC(__GNUC__)
+0354  #define SIMULATE_VERSION_MINOR DEC(__GNUC_MINOR__)
+0355  #if defined(__GNUC_PATCHLEVEL__)
+0356  #define SIMULATE_VERSION_PATCH DEC(__GNUC_PATCHLEVEL__)
+0357  #endif
+0358  #endif
+0359  
+0360  #elif defined(__GNUC__) || defined(__GNUG__)
+0361  #define COMPILER_ID "GNU"
+0362  #if defined(__GNUC__)
+0363  #define COMPILER_VERSION_MAJOR DEC(__GNUC__)
+0364  #else
+0365  #define COMPILER_VERSION_MAJOR DEC(__GNUG__)
+0366  #endif
+0367  #if defined(__GNUC_MINOR__)
+0368  #define COMPILER_VERSION_MINOR DEC(__GNUC_MINOR__)
+0369  #endif
+0370  #if defined(__GNUC_PATCHLEVEL__)
+0371  #define COMPILER_VERSION_PATCH DEC(__GNUC_PATCHLEVEL__)
+0372  #endif
+0373  
+0374  #elif defined(_MSC_VER)
+0375  #define COMPILER_ID "MSVC"
+0376  /* _MSC_VER = VVRR */
+0377  #define COMPILER_VERSION_MAJOR DEC(_MSC_VER / 100)
+0378  #define COMPILER_VERSION_MINOR DEC(_MSC_VER % 100)
+0379  #if defined(_MSC_FULL_VER)
+0380  #if _MSC_VER >= 1400
+0381  /* _MSC_FULL_VER = VVRRPPPPP */
+0382  #define COMPILER_VERSION_PATCH DEC(_MSC_FULL_VER % 100000)
+0383  #else
+0384  /* _MSC_FULL_VER = VVRRPPPP */
+0385  #define COMPILER_VERSION_PATCH DEC(_MSC_FULL_VER % 10000)
+0386  #endif
+0387  #endif
+0388  #if defined(_MSC_BUILD)
+0389  #define COMPILER_VERSION_TWEAK DEC(_MSC_BUILD)
+0390  #endif
+0391  
+0392  #elif defined(_ADI_COMPILER)
+0393  #define COMPILER_ID "ADSP"
+0394  #if defined(__VERSIONNUM__)
+0395  /* __VERSIONNUM__ = 0xVVRRPPTT */
+0396  #define COMPILER_VERSION_MAJOR DEC(__VERSIONNUM__ >> 24 & 0xFF)
+0397  #define COMPILER_VERSION_MINOR DEC(__VERSIONNUM__ >> 16 & 0xFF)
+0398  #define COMPILER_VERSION_PATCH DEC(__VERSIONNUM__ >> 8 & 0xFF)
+0399  #define COMPILER_VERSION_TWEAK DEC(__VERSIONNUM__ & 0xFF)
+0400  #endif
+0401  
+0402  #elif defined(__IAR_SYSTEMS_ICC__) || defined(__IAR_SYSTEMS_ICC)
+0403  #define COMPILER_ID "IAR"
+0404  #if defined(__VER__) && defined(__ICCARM__)
+0405  #define COMPILER_VERSION_MAJOR DEC((__VER__) / 1000000)
+0406  #define COMPILER_VERSION_MINOR DEC(((__VER__) / 1000) % 1000)
+0407  #define COMPILER_VERSION_PATCH DEC((__VER__) % 1000)
+0408  #define COMPILER_VERSION_INTERNAL DEC(__IAR_SYSTEMS_ICC__)
+0409  #elif defined(__VER__) &&                                                      \
+0410      (defined(__ICCAVR__) || defined(__ICCRX__) || defined(__ICCRH850__) ||     \
+0411       defined(__ICCRL78__) || defined(__ICC430__) || defined(__ICCRISCV__) ||   \
+0412       defined(__ICCV850__) || defined(__ICC8051__) || defined(__ICCSTM8__))
+0413  #define COMPILER_VERSION_MAJOR DEC((__VER__) / 100)
+0414  #define COMPILER_VERSION_MINOR DEC((__VER__) - (((__VER__) / 100) * 100))
+0415  #define COMPILER_VERSION_PATCH DEC(__SUBVERSION__)
+0416  #define COMPILER_VERSION_INTERNAL DEC(__IAR_SYSTEMS_ICC__)
+0417  #endif
+0418  
+0419  /* These compilers are either not known or too old to define an
+0420    identification macro.  Try to identify the platform and guess that
+0421    it is the native compiler.  */
+0422  #elif defined(__hpux) || defined(__hpua)
+0423  #define COMPILER_ID "HP"
+0424  
+0425  #else /* unknown compiler */
+0426  #define COMPILER_ID ""
+0427  #endif
+0428  
+0429  /* Construct the string literal in pieces to prevent the source from
+0430     getting matched.  Store it in a pointer rather than an array
+0431     because some compilers will just produce instructions to fill the
+0432     array rather than assigning a pointer to a static array.  */
+0433  char const *info_compiler = "INFO"
+0434                              ":"
+0435                              "compiler[" COMPILER_ID "]";
+0436  #ifdef SIMULATE_ID
+0437  char const *info_simulate = "INFO"
+0438                              ":"
+0439                              "simulate[" SIMULATE_ID "]";
+0440  #endif
+0441  
+0442  #ifdef __QNXNTO__
+0443  char const *qnxnto = "INFO"
+0444                       ":"
+0445                       "qnxnto[]";
+0446  #endif
+0447  
+0448  #if defined(__CRAYXT_COMPUTE_LINUX_TARGET)
+0449  char const *info_cray = "INFO"
+0450                          ":"
+0451                          "compiler_wrapper[CrayPrgEnv]";
+0452  #endif
+0453  
+0454  #define STRINGIFY_HELPER(X) #X
+0455  #define STRINGIFY(X) STRINGIFY_HELPER(X)
+0456  
+0457  /* Identify known platforms by name.  */
+0458  #if defined(__linux) || defined(__linux__) || defined(linux)
+0459  #define PLATFORM_ID "Linux"
+0460  
+0461  #elif defined(__MSYS__)
+0462  #define PLATFORM_ID "MSYS"
+0463  
+0464  #elif defined(__CYGWIN__)
+0465  #define PLATFORM_ID "Cygwin"
+0466  
+0467  #elif defined(__MINGW32__)
+0468  #define PLATFORM_ID "MinGW"
+0469  
+0470  #elif defined(__APPLE__)
+0471  #define PLATFORM_ID "Darwin"
+0472  
+0473  #elif defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
+0474  #define PLATFORM_ID "Windows"
+0475  
+0476  #elif defined(__FreeBSD__) || defined(__FreeBSD)
+0477  #define PLATFORM_ID "FreeBSD"
+0478  
+0479  #elif defined(__NetBSD__) || defined(__NetBSD)
+0480  #define PLATFORM_ID "NetBSD"
+0481  
+0482  #elif defined(__OpenBSD__) || defined(__OPENBSD)
+0483  #define PLATFORM_ID "OpenBSD"
+0484  
+0485  #elif defined(__sun) || defined(sun)
+0486  #define PLATFORM_ID "SunOS"
+0487  
+0488  #elif defined(_AIX) || defined(__AIX) || defined(__AIX__) || defined(__aix) || \
+0489      defined(__aix__)
+0490  #define PLATFORM_ID "AIX"
+0491  
+0492  #elif defined(__hpux) || defined(__hpux__)
+0493  #define PLATFORM_ID "HP-UX"
+0494  
+0495  #elif defined(__HAIKU__)
+0496  #define PLATFORM_ID "Haiku"
+0497  
+0498  #elif defined(__BeOS) || defined(__BEOS__) || defined(_BEOS)
+0499  #define PLATFORM_ID "BeOS"
+0500  
+0501  #elif defined(__QNX__) || defined(__QNXNTO__)
+0502  #define PLATFORM_ID "QNX"
+0503  
+0504  #elif defined(__tru64) || defined(_tru64) || defined(__TRU64__)
+0505  #define PLATFORM_ID "Tru64"
+0506  
+0507  #elif defined(__riscos) || defined(__riscos__)
+0508  #define PLATFORM_ID "RISCos"
+0509  
+0510  #elif defined(__sinix) || defined(__sinix__) || defined(__SINIX__)
+0511  #define PLATFORM_ID "SINIX"
+0512  
+0513  #elif defined(__UNIX_SV__)
+0514  #define PLATFORM_ID "UNIX_SV"
+0515  
+0516  #elif defined(__bsdos__)
+0517  #define PLATFORM_ID "BSDOS"
+0518  
+0519  #elif defined(_MPRAS) || defined(MPRAS)
+0520  #define PLATFORM_ID "MP-RAS"
+0521  
+0522  #elif defined(__osf) || defined(__osf__)
+0523  #define PLATFORM_ID "OSF1"
+0524  
+0525  #elif defined(_SCO_SV) || defined(SCO_SV) || defined(sco_sv)
+0526  #define PLATFORM_ID "SCO_SV"
+0527  
+0528  #elif defined(__ultrix) || defined(__ultrix__) || defined(_ULTRIX)
+0529  #define PLATFORM_ID "ULTRIX"
+0530  
+0531  #elif defined(__XENIX__) || defined(_XENIX) || defined(XENIX)
+0532  #define PLATFORM_ID "Xenix"
+0533  
+0534  #elif defined(__WATCOMC__)
+0535  #if defined(__LINUX__)
+0536  #define PLATFORM_ID "Linux"
+0537  
+0538  #elif defined(__DOS__)
+0539  #define PLATFORM_ID "DOS"
+0540  
+0541  #elif defined(__OS2__)
+0542  #define PLATFORM_ID "OS2"
+0543  
+0544  #elif defined(__WINDOWS__)
+0545  #define PLATFORM_ID "Windows3x"
+0546  
+0547  #elif defined(__VXWORKS__)
+0548  #define PLATFORM_ID "VxWorks"
+0549  
+0550  #else /* unknown platform */
+0551  #define PLATFORM_ID
+0552  #endif
+0553  
+0554  #elif defined(__INTEGRITY)
+0555  #if defined(INT_178B)
+0556  #define PLATFORM_ID "Integrity178"
+0557  
+0558  #else /* regular Integrity */
+0559  #define PLATFORM_ID "Integrity"
+0560  #endif
+0561  
+0562  #elif defined(_ADI_COMPILER)
+0563  #define PLATFORM_ID "ADSP"
+0564  
+0565  #else /* unknown platform */
+0566  #define PLATFORM_ID
+0567  
+0568  #endif
+0569  
+0570  /* For windows compilers MSVC and Intel we can determine
+0571     the architecture of the compiler being used.  This is because
+0572     the compilers do not have flags that can change the architecture,
+0573     but rather depend on which compiler is being used
+0574  */
+0575  #if defined(_WIN32) && defined(_MSC_VER)
+0576  #if defined(_M_IA64)
+0577  #define ARCHITECTURE_ID "IA64"
+0578  
+0579  #elif defined(_M_ARM64EC)
+0580  #define ARCHITECTURE_ID "ARM64EC"
+0581  
+0582  #elif defined(_M_X64) || defined(_M_AMD64)
+0583  #define ARCHITECTURE_ID "x64"
+0584  
+0585  #elif defined(_M_IX86)
+0586  #define ARCHITECTURE_ID "X86"
+0587  
+0588  #elif defined(_M_ARM64)
+0589  #define ARCHITECTURE_ID "ARM64"
+0590  
+0591  #elif defined(_M_ARM)
+0592  #if _M_ARM == 4
+0593  #define ARCHITECTURE_ID "ARMV4I"
+0594  #elif _M_ARM == 5
+0595  #define ARCHITECTURE_ID "ARMV5I"
+0596  #else
+0597  #define ARCHITECTURE_ID "ARMV" STRINGIFY(_M_ARM)
+0598  #endif
+0599  
+0600  #elif defined(_M_MIPS)
+0601  #define ARCHITECTURE_ID "MIPS"
+0602  
+0603  #elif defined(_M_SH)
+0604  #define ARCHITECTURE_ID "SHx"
+0605  
+0606  #else /* unknown architecture */
+0607  #define ARCHITECTURE_ID ""
+0608  #endif
+0609  
+0610  #elif defined(__WATCOMC__)
+0611  #if defined(_M_I86)
+0612  #define ARCHITECTURE_ID "I86"
+0613  
+0614  #elif defined(_M_IX86)
+0615  #define ARCHITECTURE_ID "X86"
+0616  
+0617  #else /* unknown architecture */
+0618  #define ARCHITECTURE_ID ""
+0619  #endif
+0620  
+0621  #elif defined(__IAR_SYSTEMS_ICC__) || defined(__IAR_SYSTEMS_ICC)
+0622  #if defined(__ICCARM__)
+0623  #define ARCHITECTURE_ID "ARM"
+0624  
+0625  #elif defined(__ICCRX__)
+0626  #define ARCHITECTURE_ID "RX"
+0627  
+0628  #elif defined(__ICCRH850__)
+0629  #define ARCHITECTURE_ID "RH850"
+0630  
+0631  #elif defined(__ICCRL78__)
+0632  #define ARCHITECTURE_ID "RL78"
+0633  
+0634  #elif defined(__ICCRISCV__)
+0635  #define ARCHITECTURE_ID "RISCV"
+0636  
+0637  #elif defined(__ICCAVR__)
+0638  #define ARCHITECTURE_ID "AVR"
+0639  
+0640  #elif defined(__ICC430__)
+0641  #define ARCHITECTURE_ID "MSP430"
+0642  
+0643  #elif defined(__ICCV850__)
+0644  #define ARCHITECTURE_ID "V850"
+0645  
+0646  #elif defined(__ICC8051__)
+0647  #define ARCHITECTURE_ID "8051"
+0648  
+0649  #elif defined(__ICCSTM8__)
+0650  #define ARCHITECTURE_ID "STM8"
+0651  
+0652  #else /* unknown architecture */
+0653  #define ARCHITECTURE_ID ""
+0654  #endif
+0655  
+0656  #elif defined(__ghs__)
+0657  #if defined(__PPC64__)
+0658  #define ARCHITECTURE_ID "PPC64"
+0659  
+0660  #elif defined(__ppc__)
+0661  #define ARCHITECTURE_ID "PPC"
+0662  
+0663  #elif defined(__ARM__)
+0664  #define ARCHITECTURE_ID "ARM"
+0665  
+0666  #elif defined(__x86_64__)
+0667  #define ARCHITECTURE_ID "x64"
+0668  
+0669  #elif defined(__i386__)
+0670  #define ARCHITECTURE_ID "X86"
+0671  
+0672  #else /* unknown architecture */
+0673  #define ARCHITECTURE_ID ""
+0674  #endif
+0675  
+0676  #elif defined(__clang__) && defined(__ti__)
+0677  #if defined(__ARM_ARCH)
+0678  #define ARCHITECTURE_ID "ARM"
+0679  
+0680  #else /* unknown architecture */
+0681  #define ARCHITECTURE_ID ""
+0682  #endif
+0683  
+0684  #elif defined(__TI_COMPILER_VERSION__)
+0685  #if defined(__TI_ARM__)
+0686  #define ARCHITECTURE_ID "ARM"
+0687  
+0688  #elif defined(__MSP430__)
+0689  #define ARCHITECTURE_ID "MSP430"
+0690  
+0691  #elif defined(__TMS320C28XX__)
+0692  #define ARCHITECTURE_ID "TMS320C28x"
+0693  
+0694  #elif defined(__TMS320C6X__) || defined(_TMS320C6X)
+0695  #define ARCHITECTURE_ID "TMS320C6x"
+0696  
+0697  #else /* unknown architecture */
+0698  #define ARCHITECTURE_ID ""
+0699  #endif
+0700  
+0701  #elif defined(__ADSPSHARC__)
+0702  #define ARCHITECTURE_ID "SHARC"
+0703  
+0704  #elif defined(__ADSPBLACKFIN__)
+0705  #define ARCHITECTURE_ID "Blackfin"
+0706  
+0707  #elif defined(__TASKING__)
+0708  
+0709  #if defined(__CTC__) || defined(__CPTC__)
+0710  #define ARCHITECTURE_ID "TriCore"
+0711  
+0712  #elif defined(__CMCS__)
+0713  #define ARCHITECTURE_ID "MCS"
+0714  
+0715  #elif defined(__CARM__) || defined(__CPARM__)
+0716  #define ARCHITECTURE_ID "ARM"
+0717  
+0718  #elif defined(__CARC__)
+0719  #define ARCHITECTURE_ID "ARC"
+0720  
+0721  #elif defined(__C51__)
+0722  #define ARCHITECTURE_ID "8051"
+0723  
+0724  #elif defined(__CPCP__)
+0725  #define ARCHITECTURE_ID "PCP"
+0726  
+0727  #else
+0728  #define ARCHITECTURE_ID ""
+0729  #endif
+0730  
+0731  #else
+0732  #define ARCHITECTURE_ID
+0733  #endif
+0734  
+0735  /* Convert integer to decimal digit literals.  */
+0736  #define DEC(n)                                                                 \
+0737    ('0' + (((n) / 10000000) % 10)), ('0' + (((n) / 1000000) % 10)),             \
+0738        ('0' + (((n) / 100000) % 10)), ('0' + (((n) / 10000) % 10)),             \
+0739        ('0' + (((n) / 1000) % 10)), ('0' + (((n) / 100) % 10)),                 \
+0740        ('0' + (((n) / 10) % 10)), ('0' + ((n) % 10))
+0741  
+0742  /* Convert integer to hex digit literals.  */
+0743  #define HEX(n)                                                                 \
+0744    ('0' + ((n) >> 28 & 0xF)), ('0' + ((n) >> 24 & 0xF)),                        \
+0745        ('0' + ((n) >> 20 & 0xF)), ('0' + ((n) >> 16 & 0xF)),                    \
+0746        ('0' + ((n) >> 12 & 0xF)), ('0' + ((n) >> 8 & 0xF)),                     \
+0747        ('0' + ((n) >> 4 & 0xF)), ('0' + ((n) & 0xF))
+0748  
+0749  /* Construct a string literal encoding the version number. */
+0750  #ifdef COMPILER_VERSION
+0751  char const *info_version = "INFO"
+0752                             ":"
+0753                             "compiler_version[" COMPILER_VERSION "]";
+0754  
+0755  /* Construct a string literal encoding the version number components. */
+0756  #elif defined(COMPILER_VERSION_MAJOR)
+0757  char const info_version[] = {'I',
+0758                               'N',
+0759                               'F',
+0760                               'O',
+0761                               ':',
+0762                               'c',
+0763                               'o',
+0764                               'm',
+0765                               'p',
+0766                               'i',
+0767                               'l',
+0768                               'e',
+0769                               'r',
+0770                               '_',
+0771                               'v',
+0772                               'e',
+0773                               'r',
+0774                               's',
+0775                               'i',
+0776                               'o',
+0777                               'n',
+0778                               '[',
+0779                               COMPILER_VERSION_MAJOR,
+0780  #ifdef COMPILER_VERSION_MINOR
+0781                               '.',
+0782                               COMPILER_VERSION_MINOR,
+0783  #ifdef COMPILER_VERSION_PATCH
+0784                               '.',
+0785                               COMPILER_VERSION_PATCH,
+0786  #ifdef COMPILER_VERSION_TWEAK
+0787                               '.',
+0788                               COMPILER_VERSION_TWEAK,
+0789  #endif
+0790  #endif
+0791  #endif
+0792                               ']',
+0793                               '\0'};
+0794  #endif
+0795  
+0796  /* Construct a string literal encoding the internal version number. */
+0797  #ifdef COMPILER_VERSION_INTERNAL
+0798  char const info_version_internal[] = {
+0799      'I', 'N', 'F', 'O', ':', 'c', 'o', 'm',
+0800      'p', 'i', 'l', 'e', 'r', '_', 'v', 'e',
+0801      'r', 's', 'i', 'o', 'n', '_', 'i', 'n',
+0802      't', 'e', 'r', 'n', 'a', 'l', '[', COMPILER_VERSION_INTERNAL,
+0803      ']', '\0'};
+0804  #elif defined(COMPILER_VERSION_INTERNAL_STR)
+0805  char const *info_version_internal =
+0806      "INFO"
+0807      ":"
+0808      "compiler_version_internal[" COMPILER_VERSION_INTERNAL_STR "]";
+0809  #endif
+0810  
+0811  /* Construct a string literal encoding the version number components. */
+0812  #ifdef SIMULATE_VERSION_MAJOR
+0813  char const info_simulate_version[] = {'I',
+0814                                        'N',
+0815                                        'F',
+0816                                        'O',
+0817                                        ':',
+0818                                        's',
+0819                                        'i',
+0820                                        'm',
+0821                                        'u',
+0822                                        'l',
+0823                                        'a',
+0824                                        't',
+0825                                        'e',
+0826                                        '_',
+0827                                        'v',
+0828                                        'e',
+0829                                        'r',
+0830                                        's',
+0831                                        'i',
+0832                                        'o',
+0833                                        'n',
+0834                                        '[',
+0835                                        SIMULATE_VERSION_MAJOR,
+0836  #ifdef SIMULATE_VERSION_MINOR
+0837                                        '.',
+0838                                        SIMULATE_VERSION_MINOR,
+0839  #ifdef SIMULATE_VERSION_PATCH
+0840                                        '.',
+0841                                        SIMULATE_VERSION_PATCH,
+0842  #ifdef SIMULATE_VERSION_TWEAK
+0843                                        '.',
+0844                                        SIMULATE_VERSION_TWEAK,
+0845  #endif
+0846  #endif
+0847  #endif
+0848                                        ']',
+0849                                        '\0'};
+0850  #endif
+0851  
+0852  /* Construct the string literal in pieces to prevent the source from
+0853     getting matched.  Store it in a pointer rather than an array
+0854     because some compilers will just produce instructions to fill the
+0855     array rather than assigning a pointer to a static array.  */
+0856  char const *info_platform = "INFO"
+0857                              ":"
+0858                              "platform[" PLATFORM_ID "]";
+0859  char const *info_arch = "INFO"
+0860                          ":"
+0861                          "arch[" ARCHITECTURE_ID "]";
+0862  
+0863  #define CXX_STD_98 199711L
+0864  #define CXX_STD_11 201103L
+0865  #define CXX_STD_14 201402L
+0866  #define CXX_STD_17 201703L
+0867  #define CXX_STD_20 202002L
+0868  #define CXX_STD_23 202302L
+0869  
+0870  #if defined(__INTEL_COMPILER) && defined(_MSVC_LANG)
+0871  #if _MSVC_LANG > CXX_STD_17
+0872  #define CXX_STD _MSVC_LANG
+0873  #elif _MSVC_LANG == CXX_STD_17 && defined(__cpp_aggregate_paren_init)
+0874  #define CXX_STD CXX_STD_20
+0875  #elif _MSVC_LANG > CXX_STD_14 && __cplusplus > CXX_STD_17
+0876  #define CXX_STD CXX_STD_20
+0877  #elif _MSVC_LANG > CXX_STD_14
+0878  #define CXX_STD CXX_STD_17
+0879  #elif defined(__INTEL_CXX11_MODE__) && defined(__cpp_aggregate_nsdmi)
+0880  #define CXX_STD CXX_STD_14
+0881  #elif defined(__INTEL_CXX11_MODE__)
+0882  #define CXX_STD CXX_STD_11
+0883  #else
+0884  #define CXX_STD CXX_STD_98
+0885  #endif
+0886  #elif defined(_MSC_VER) && defined(_MSVC_LANG)
+0887  #if _MSVC_LANG > __cplusplus
+0888  #define CXX_STD _MSVC_LANG
+0889  #else
+0890  #define CXX_STD __cplusplus
+0891  #endif
+0892  #elif defined(__NVCOMPILER)
+0893  #if __cplusplus == CXX_STD_17 && defined(__cpp_aggregate_paren_init)
+0894  #define CXX_STD CXX_STD_20
+0895  #else
+0896  #define CXX_STD __cplusplus
+0897  #endif
+0898  #elif defined(__INTEL_COMPILER) || defined(__PGI)
+0899  #if __cplusplus == CXX_STD_11 && defined(__cpp_namespace_attributes)
+0900  #define CXX_STD CXX_STD_17
+0901  #elif __cplusplus == CXX_STD_11 && defined(__cpp_aggregate_nsdmi)
+0902  #define CXX_STD CXX_STD_14
+0903  #else
+0904  #define CXX_STD __cplusplus
+0905  #endif
+0906  #elif (defined(__IBMCPP__) || defined(__ibmxl__)) && defined(__linux__)
+0907  #if __cplusplus == CXX_STD_11 && defined(__cpp_aggregate_nsdmi)
+0908  #define CXX_STD CXX_STD_14
+0909  #else
+0910  #define CXX_STD __cplusplus
+0911  #endif
+0912  #elif __cplusplus == 1 && defined(__GXX_EXPERIMENTAL_CXX0X__)
+0913  #define CXX_STD CXX_STD_11
+0914  #else
+0915  #define CXX_STD __cplusplus
+0916  #endif
+0917  
+0918  const char *info_language_standard_default = "INFO"
+0919                                               ":"
+0920                                               "standard_default["
+0921  #if CXX_STD > CXX_STD_23
+0922                                               "26"
+0923  #elif CXX_STD > CXX_STD_20
+0924                                               "23"
+0925  #elif CXX_STD > CXX_STD_17
+0926                                               "20"
+0927  #elif CXX_STD > CXX_STD_14
+0928                                               "17"
+0929  #elif CXX_STD > CXX_STD_11
+0930                                               "14"
+0931  #elif CXX_STD >= CXX_STD_11
+0932                                               "11"
+0933  #else
+0934                                               "98"
+0935  #endif
+0936                                               "]";
+0937  
+0938  const char *info_language_extensions_default = "INFO"
+0939                                                 ":"
+0940                                                 "extensions_default["
+0941  #if (defined(__clang__) || defined(__GNUC__) || defined(__xlC__) ||            \
+0942       defined(__TI_COMPILER_VERSION__)) &&                                      \
+0943      !defined(__STRICT_ANSI__)
+0944                                                 "ON"
+0945  #else
+0946                                                 "OFF"
+0947  #endif
+0948                                                 "]";
+0949  
+0950  /*--------------------------------------------------------------------------*/
+0951  
+0952  int main(int argc, char *argv[]) {
+0953    int require = 0;
+0954    require += info_compiler[argc];
+0955    require += info_platform[argc];
+0956    require += info_arch[argc];
+0957  #ifdef COMPILER_VERSION_MAJOR
+0958    require += info_version[argc];
+0959  #endif
+0960  #if defined(COMPILER_VERSION_INTERNAL) || defined(COMPILER_VERSION_INTERNAL_STR)
+0961    require += info_version_internal[argc];
+0962  #endif
+0963  #ifdef SIMULATE_ID
+0964    require += info_simulate[argc];
+0965  #endif
+0966  #ifdef SIMULATE_VERSION_MAJOR
+0967    require += info_simulate_version[argc];
+0968  #endif
+0969  #if defined(__CRAYXT_COMPUTE_LINUX_TARGET)
+0970    require += info_cray[argc];
+0971  #endif
+0972    require += info_language_standard_default[argc];
+0973    require += info_language_extensions_default[argc];
+0974    (void)argv;
+0975    return require;
+0976  }
+
+
++-----------------------------------------------------------------------------+
+| include/backend/codegen.hpp                                                  |
++-----------------------------------------------------------------------------+
+
+0001  #pragma once
+0002  #include "parser/ast.hpp"
+0003  #include "semantic_analyzer/symbol_table.hpp"
+0004  #include <llvm/IR/IRBuilder.h>
+0005  #include <llvm/IR/LLVMContext.h>
+0006  #include <llvm/IR/Module.h>
+0007  #include <llvm/IR/Value.h>
+0008  #include <functional>
+0009  #include <memory>
+0010  #include <string>
+0011  #include <vector>
+0012  class CodeGen {
+0013  public:
+0014    std::unique_ptr<llvm::LLVMContext> context;
+0015    std::unique_ptr<llvm::IRBuilder<>> builder;
+0016    std::unique_ptr<llvm::Module> module;
+0017    SymbolTable st;
+0018    llvm::Function *current_function = nullptr;
+0019    llvm::Function *global_init_func = nullptr;
+0020    std::vector<std::function<void()>> global_init_instructions;
+0021    CodeGen();
+0022    void generate(AST *root);
+0023    void optimize();
+0024    void emit_object_code(const std::string &filename);
+0025    void dump_ir();
+0026  private:
+0027    llvm::Type *get_llvm_type(const Type &type);
+0028    llvm::Value *visit(AST *node);
+0029    llvm::Value *visit_program(AST *node);
+0030    llvm::Value *visit_decl(AST *node);
+0031    llvm::Value *visit_var_decl(AST *node);
+0032    llvm::Value *visit_const_decl(AST *node);
+0033    llvm::Value *visit_function_decl(AST *node);
+0034    llvm::Value *visit_block(AST *node);
+0035    llvm::Value *visit_if_stmt(AST *node);
+0036    llvm::Value *visit_while_stmt(AST *node);
+0037    llvm::Value *visit_return_stmt(AST *node);
+0038    llvm::Value *visit_expr_stmt(AST *node);
+0039    llvm::Value *visit_expr(AST *node);
+0040    llvm::Value *visit_primary_expr(AST *node);
+0041    llvm::Value *visit_assign_expr(AST *node);
+0042    llvm::Value *visit_binary_expr(AST *node);
+0043    llvm::Value *visit_postfix_expr(AST *node);
+0044    llvm::Value *visit_print_stmt(AST *node);
+0045    llvm::Value *visit_for_stmt(AST *node);
+0046    llvm::Value *visit_unary_expr(AST *node);
+0047    llvm::AllocaInst *create_entry_block_alloca(llvm::Function *function,
+0048                                                const std::string &var_name,
+0049                                                llvm::Type *type);
+0050    llvm::Value *allocate_tensor_on_stack(const Type &type, const std::string &name = "tensor");
+0051  };
+
+
++-----------------------------------------------------------------------------+
+| include/lexer/automata_config.hpp                                            |
++-----------------------------------------------------------------------------+
+
+0001  #pragma once
+0002  constexpr int ALPHABET_SIZE = 256;
+
+
++-----------------------------------------------------------------------------+
+| include/lexer/dfa.hpp                                                        |
++-----------------------------------------------------------------------------+
+
+0001  #pragma once
+0002  #include "automata_config.hpp"
+0003  #include "dsu.hpp"
+0004  #include "token.hpp"
+0005  #include "token_priority.hpp"
+0006  #include <stack>
+0007  #include <string>
+0008  #include <vector>
+0009  struct DFA {
+0010    int num_states;
+0011    int start_state;
+0012    std::vector<std::vector<int>> delta;
+0013    std::vector<Token> token_types;
+0014    DFA(int num_states, int start_state,
+0015        const std::vector<std::vector<int>> &delta,
+0016        const std::vector<Token> token_types)
+0017        : num_states(num_states), start_state(start_state), delta(delta),
+0018          token_types(token_types) {}
+0019    DFA minimize() const {
+0020      std::vector<bool> visited(num_states);
+0021      std::stack<int> stack;
+0022      stack.push(start_state);
+0023      visited[start_state] = true;
+0024      while (!stack.empty()) {
+0025        int u = stack.top();
+0026        stack.pop();
+0027        for (int alpha = 0; alpha < ALPHABET_SIZE; alpha++) {
+0028          int v = delta[u][alpha];
+0029          if (!visited[v]) {
+0030            visited[v] = true;
+0031            stack.push(v);
+0032          }
+0033        }
+0034      }
+0035      int cnt = 0;
+0036      std::vector<int> mapping(num_states, -1);
+0037      for (int i = 0; i < num_states; i++) {
+0038        if (visited[i])
+0039          mapping[i] = cnt++;
+0040      }
+0041      int start_state_updated = mapping[start_state];
+0042      std::vector<std::vector<int>> delta_updated(
+0043          cnt, std::vector<int>(ALPHABET_SIZE));
+0044      for (int i = 0; i < num_states; i++) {
+0045        for (int alpha = 0; alpha < ALPHABET_SIZE; alpha++) {
+0046          if (mapping[i] != -1) {
+0047            delta_updated[mapping[i]][alpha] = mapping[delta[i][alpha]];
+0048          }
+0049        }
+0050      }
+0051      std::vector<Token> token_types_updated(cnt, Token::TOK_ERROR);
+0052      for (int i = 0; i < num_states; i++) {
+0053        if (mapping[i] != -1) {
+0054          token_types_updated[mapping[i]] = token_types[i];
+0055        }
+0056      }
+0057      std::vector<std::vector<int>> table(cnt, std::vector<int>(cnt));
+0058      for (int i = 0; i < cnt; i++) {
+0059        for (int j = 0; j < cnt; j++) {
+0060          if (token_types_updated[i] != token_types_updated[j]) {
+0061            table[i][j] = 1;
+0062            table[j][i] = 1;
+0063          }
+0064        }
+0065      }
+0066      int change;
+0067      do {
+0068        change = 0;
+0069        for (int i = 0; i < cnt; i++) {
+0070          for (int j = 0; j < cnt; j++) {
+0071            for (int alpha = 0; alpha < ALPHABET_SIZE; alpha++) {
+0072              if (!table[i][j] &&
+0073                  table[delta_updated[i][alpha]][delta_updated[j][alpha]]) {
+0074                table[i][j] = 1;
+0075                table[j][i] = 1;
+0076                change = 1;
+0077              }
+0078            }
+0079          }
+0080        }
+0081      } while (change);
+0082      DSU dsu(cnt);
+0083      for (int i = 0; i < cnt; i++) {
+0084        for (int j = 0; j < cnt; j++) {
+0085          if (!table[i][j]) {
+0086            dsu.union_sets(i, j);
+0087          }
+0088        }
+0089      }
+0090      int num_states_new = dsu.num_sets;
+0091      std::vector<int> mapping_new(cnt, -1);
+0092      int cnt2 = 0;
+0093      for (int i = 0; i < cnt; i++) {
+0094        if (mapping_new[dsu.find(i)] == -1) {
+0095          mapping_new[dsu.find(i)] = cnt2++;
+0096        }
+0097      }
+0098      int start_state_new = mapping_new[dsu.find(start_state_updated)];
+0099      std::vector<std::vector<int>> delta_new(num_states_new,
+0100                                              std::vector<int>(ALPHABET_SIZE));
+0101      for (int i = 0; i < cnt; i++) {
+0102        for (int alpha = 0; alpha < ALPHABET_SIZE; alpha++) {
+0103          delta_new[mapping_new[dsu.find(i)]][alpha] =
+0104              mapping_new[dsu.find(delta_updated[i][alpha])];
+0105        }
+0106      }
+0107      std::vector<Token> token_types_new(num_states_new, Token::TOK_ERROR);
+0108      for (int i = 0; i < cnt; i++) {
+0109        token_types_new[mapping_new[dsu.find(i)]] = max(
+0110            token_types_new[mapping_new[dsu.find(i)]], token_types_updated[i]);
+0111      }
+0112      DFA dfa_new(num_states_new, start_state_new, delta_new, token_types_new);
+0113      return dfa_new;
+0114    }
+0115    Token token(const std::string &str) const {
+0116      int state = start_state;
+0117      for (int i = 0; i < str.length(); i++) {
+0118        state = delta[state][static_cast<unsigned char>(str[i])];
+0119      }
+0120      return token_types[state];
+0121    }
+0122  };
+
+
++-----------------------------------------------------------------------------+
+| include/lexer/dsu.hpp                                                        |
++-----------------------------------------------------------------------------+
+
+0001  #pragma once
+0002  #include <vector>
+0003  struct DSU {
+0004    int n;
+0005    std::vector<int> p;
+0006    std::vector<int> r;
+0007    int num_sets;
+0008    DSU(int n) : n(n), p(n), r(n), num_sets(n) {
+0009      for (int i = 0; i < n; i++)
+0010        p[i] = i;
+0011      for (int i = 0; i < n; i++)
+0012        r[i] = 0;
+0013    }
+0014    int find(int x) {
+0015      if (p[x] != x)
+0016        p[x] = find(p[x]);
+0017      return p[x];
+0018    }
+0019    int same_set(int x, int y) { return find(x) == find(y); }
+0020    void union_sets(int x, int y) {
+0021      x = find(x);
+0022      y = find(y);
+0023      if (x == y)
+0024        return;
+0025      if (r[x] < r[y]) {
+0026        p[x] = y;
+0027      } else if (r[x] > r[y]) {
+0028        p[y] = x;
+0029      } else {
+0030        p[x] = y;
+0031        r[y]++;
+0032      }
+0033      num_sets--;
+0034    }
+0035  };
+
+
++-----------------------------------------------------------------------------+
+| include/lexer/lexeme.hpp                                                     |
++-----------------------------------------------------------------------------+
+
+0001  #pragma once
+0002  #include "token.hpp"
+0003  #include <string>
+0004  struct Lexeme {
+0005    int start = -1;
+0006    int length = 0;
+0007    int line_number = -1;
+0008    int col = -1;
+0009    std::string s = "";
+0010    Token tok = Token::TOK_ERROR;
+0011    Lexeme() = default;
+0012    Lexeme(int start, int length, int line_number, int col, std::string s, Token tok)
+0013        : start(start), length(length), line_number(line_number), col(col), s(s), tok(tok) {
+0014    }
+0015  };
+
+
++-----------------------------------------------------------------------------+
+| include/lexer/lexer.hpp                                                      |
++-----------------------------------------------------------------------------+
+
+0001  #pragma once
+0002  #include "lexeme.hpp"
+0003  #include "regex_to_nfa.hpp"
+0004  #include "token.hpp"
+0005  #include <cctype>
+0006  #include <cstdlib>
+0007  #include <iostream>
+0008  #include <string>
+0009  #include <utility>
+0010  #include <vector>
+0011  inline const std::string numeric_regex() {
+0012    std::string ret;
+0013    ret.push_back('(');
+0014    for (int i = 0; i < 9; i++) {
+0015      ret.push_back((char)('0' + i));
+0016      ret.push_back('+');
+0017    }
+0018    ret.push_back('9');
+0019    ret.push_back(')');
+0020    return ret;
+0021  }
+0022  inline const std::string numeric_without_zero_regex() {
+0023    std::string ret;
+0024    ret.push_back('(');
+0025    for (int i = 1; i < 9; i++) {
+0026      ret.push_back((char)('0' + i));
+0027      ret.push_back('+');
+0028    }
+0029    ret.push_back('9');
+0030    ret.push_back(')');
+0031    return ret;
+0032  }
+0033  inline const std::string alpha_regex() {
+0034    std::string ret;
+0035    ret.push_back('(');
+0036    for (int i = 0; i < 26; i++) {
+0037      ret.push_back((char)('a' + i));
+0038      ret.push_back('+');
+0039    }
+0040    for (int i = 0; i < 25; i++) {
+0041      ret.push_back((char)('A' + i));
+0042      ret.push_back('+');
+0043    }
+0044    ret.push_back('Z');
+0045    ret.push_back(')');
+0046    return ret;
+0047  }
+0048  inline const std::string int_lit_regex() {
+0049    std::string ret;
+0050    ret.append("((0+");
+0051    ret.append(numeric_without_zero_regex());
+0052    ret.append(numeric_regex());
+0053    ret.append("*))");
+0054    return ret;
+0055  }
+0056  inline const std::string float_lit_regex() {
+0057    std::string ret;
+0058    std::string int_lit = int_lit_regex();
+0059    ret.append("((");
+0060    ret.append(int_lit);
+0061    ret.append("+(\\e+");
+0062    ret.append(int_lit);
+0063    ret.append(")\\.");
+0064    ret.append(int_lit);
+0065    ret.append("+");
+0066    ret.append(int_lit);
+0067    ret.append("\\.(\\e+");
+0068    ret.append(int_lit);
+0069    ret.append("))(\\e+(e+E)(\\e+\\++-)");
+0070    ret.append(int_lit);
+0071    ret.append("))");
+0072    return ret;
+0073  }
+0074  inline const std::string id_regex() {
+0075    std::string alpha = alpha_regex();
+0076    std::string numeric = numeric_regex();
+0077    std::string ret;
+0078    ret.append("((_+");
+0079    ret.append(alpha);
+0080    ret.append(")(_+");
+0081    ret.append(alpha);
+0082    ret.append("+");
+0083    ret.append(numeric);
+0084    ret.append(")*)");
+0085    return ret;
+0086  }
+0087  const std::vector<std::string> regexes = {"fn",
+0088                                            "let",
+0089                                            "return",
+0090                                            "print",
+0091                                            "println",
+0092                                            "const",
+0093                                            "tensor",
+0094                                            "matrix",
+0095                                            "vector",
+0096                                            "size",
+0097                                            "int",
+0098                                            "float",
+0099                                            "bool",
+0100                                            "if",
+0101                                            "else",
+0102                                            "range",
+0103                                            "for",
+0104                                            "while",
+0105                                            "in",
+0106                                            "break",
+0107                                            "continue",
+0108                                            "true",
+0109                                            "false",
+0110                                            int_lit_regex(),
+0111                                            float_lit_regex(),
+0112                                            "=",
+0113                                            "\\+",
+0114                                            "-",
+0115                                            "\\*",
+0116                                            "/",
+0117                                            "%",
+0118                                            "@",
+0119                                            "inv",
+0120                                            "==",
+0121                                            "!=",
+0122                                            "<",
+0123                                            "<=",
+0124                                            ">",
+0125                                            ">=",
+0126                                            "and",
+0127                                            "&",
+0128                                            "or",
+0129                                            "|",
+0130                                            "not",
+0131                                            "~",
+0132                                            "^",
+0133                                            "'",
+0134                                            "->",
+0135                                            ":",
+0136                                            ",",
+0137                                            ";",
+0138                                            "\\.",
+0139                                            "\\(",
+0140                                            "\\)",
+0141                                            "[",
+0142                                            "]",
+0143                                            "{",
+0144                                            "}",
+0145                                            "#\\?",
+0146                                            id_regex()};
+0147  #define X(name) Token::name,
+0148  const std::vector<Token> tokens = {TOKEN_LIST};
+0149  #undef X
+0150  inline const std::vector<Token> tokens_truncated() {
+0151    std::vector<Token> ret;
+0152    for (int i = 0; i < tokens.size() - 3; i++) {
+0153      ret.push_back(tokens[i]);
+0154    }
+0155    return ret;
+0156  }
+0157  const DFA dfa = regex_to_dfa(regexes, tokens_truncated());
+0158  inline std::vector<Lexeme> maximal_munch(std::string &source) {
+0159    std::vector<Lexeme> lexemes;
+0160    std::unordered_set<long long> failed;
+0161    std::stack<std::pair<int, int>> s;
+0162    int pos = 0;
+0163    int line_number = 1;
+0164    int pos_within_line = 1;
+0165    int last_accepting_pos_within_line = 0;
+0166    while (pos < source.size() &&
+0167           std::isspace(static_cast<unsigned char>(source[pos]))) {
+0168      if (source[pos] == '\n') {
+0169        line_number++;
+0170        pos_within_line = 1;
+0171      } else {
+0172        pos_within_line++;
+0173      }
+0174      pos++;
+0175    }
+0176    while (pos < source.size()) {
+0177      if (source[pos] == '"') {
+0178        int start = pos;
+0179        int start_col = pos_within_line;
+0180        pos++;
+0181        pos_within_line++;
+0182        std::string str_content;
+0183        while (pos < source.size() && source[pos] != '"') {
+0184          if (source[pos] == '\\' && pos + 1 < source.size()) {
+0185            pos++;
+0186            pos_within_line++;
+0187            switch (source[pos]) {
+0188            case 'n':
+0189              str_content += '\n';
+0190              break;
+0191            case 't':
+0192              str_content += '\t';
+0193              break;
+0194            case '\\':
+0195              str_content += '\\';
+0196              break;
+0197            case '"':
+0198              str_content += '"';
+0199              break;
+0200            default:
+0201              str_content += source[pos];
+0202              break;
+0203            }
+0204          } else if (source[pos] == '\n') {
+0205            std::cerr << "Lexical error in line " << line_number
+0206                      << " at position " << pos_within_line
+0207                      << ": Unterminated string literal\n";
+0208            std::exit(1);
+0209          } else {
+0210            str_content += source[pos];
+0211          }
+0212          pos++;
+0213          pos_within_line++;
+0214        }
+0215        if (pos >= source.size()) {
+0216          std::cerr << "Lexical error in line " << line_number << " at position "
+0217                    << start_col << ": Unterminated string literal\n";
+0218          std::exit(1);
+0219        }
+0220        pos++;
+0221        pos_within_line++;
+0222        Lexeme lexeme(start, pos - start, line_number, start_col, str_content,
+0223                      Token::TOK_STRING_LIT);
+0224        lexemes.push_back(lexeme);
+0225        while (pos < source.size() &&
+0226               std::isspace(static_cast<unsigned char>(source[pos]))) {
+0227          if (source[pos] == '\n') {
+0228            line_number++;
+0229            pos_within_line = 1;
+0230          } else {
+0231            pos_within_line++;
+0232          }
+0233          pos++;
+0234        }
+0235        continue;
+0236      }
+0237      int last_accepting_state = -1;
+0238      int last_accepting_pos = -1;
+0239      int state = dfa.start_state;
+0240      int start = pos;
+0241      while (pos < source.size()) {
+0242        long long key = (static_cast<long long>(pos) << 32) | state;
+0243        if (failed.count(key)) {
+0244          break;
+0245        }
+0246        unsigned char x = static_cast<unsigned char>(source[pos]);
+0247        if (x & 0x80) {
+0248          std::cerr << "Lexical error in line " << line_number << " at position "
+0249                    << pos_within_line << "\n";
+0250          std::exit(1);
+0251        }
+0252        state = dfa.delta[state][x];
+0253        if (dfa.token_types[state] != Token::TOK_ERROR) {
+0254          s = std::stack<std::pair<int, int>>();
+0255          last_accepting_state = state;
+0256          last_accepting_pos = pos;
+0257          last_accepting_pos_within_line = pos_within_line;
+0258        }
+0259        s.push(std::make_pair(pos, state));
+0260        pos++;
+0261        pos_within_line++;
+0262      }
+0263      while (!s.empty() && dfa.token_types[s.top().second] == Token::TOK_ERROR) {
+0264        failed.insert((static_cast<long long>(s.top().first) << 32) |
+0265                      s.top().second);
+0266        s.pop();
+0267      }
+0268      if (last_accepting_state == -1) {
+0269        std::cerr << "Lexical error in line " << line_number << " at position "
+0270                  << last_accepting_pos_within_line + 1 << "\n";
+0271        std::exit(1);
+0272      }
+0273      int token_col =
+0274          last_accepting_pos_within_line - (last_accepting_pos - start);
+0275      Lexeme lexeme(start, last_accepting_pos - start + 1, line_number, token_col,
+0276                    source.substr(start, last_accepting_pos - start + 1),
+0277                    dfa.token_types[last_accepting_state]);
+0278      if (lexeme.tok != Token::TOK_COMMENT) {
+0279        lexemes.push_back(lexeme);
+0280      }
+0281      pos = last_accepting_pos + 1;
+0282      pos_within_line = last_accepting_pos_within_line + 1;
+0283      while (pos < source.size() &&
+0284             std::isspace(static_cast<unsigned char>(source[pos]))) {
+0285        if (source[pos] == '\n') {
+0286          line_number++;
+0287          pos_within_line = 1;
+0288        } else {
+0289          pos_within_line++;
+0290        }
+0291        pos++;
+0292      }
+0293    }
+0294    lexemes.push_back(Lexeme(-1, -1, -1, -1, "", Token::TOK_EOF));
+0295    return lexemes;
+0296  }
+
+
++-----------------------------------------------------------------------------+
+| include/lexer/main.cpp                                                       |
++-----------------------------------------------------------------------------+
+
+0001  #include "lexer.hpp"
+0002  int main() {
+0003    std::string text =
+0004        "let x: int = 3;\n#this is a comment?\nconst comment_ends = -.3;";
+0005    std::vector<Lexeme> lexemes = maximal_munch(text);
+0006    for (int i = 0; i < lexemes.size() - 1; i++) {
+0007      auto lexeme = lexemes[i];
+0008      std::cout << text.substr(lexeme.start, lexeme.length) << " -> "
+0009                << token_names[static_cast<int>(lexeme.tok)] << "\n";
+0010    }
+0011  }
+
+
++-----------------------------------------------------------------------------+
+| include/lexer/nfa.hpp                                                        |
++-----------------------------------------------------------------------------+
+
+0001  #pragma once
+0002  #include "dfa.hpp"
+0003  #include "set_hash.hpp"
+0004  #include <array>
+0005  #include <stack>
+0006  #include <unordered_map>
+0007  #include <unordered_set>
+0008  #include <vector>
+0009  struct NFA {
+0010    int num_states;
+0011    int start_state;
+0012    std::vector<std::vector<std::vector<int>>> delta;
+0013    std::vector<Token> token_types;
+0014    NFA(int num_states, int start_state,
+0015        const std::vector<std::vector<std::vector<int>>> &delta,
+0016        std::vector<Token> token_types)
+0017        : num_states(num_states), start_state(start_state), delta(delta),
+0018          token_types(token_types) {}
+0019    NFA union_nfa(const NFA &other) const {
+0020      int num_states_new = num_states + other.num_states + 1;
+0021      std::vector<Token> token_types_new(num_states_new, Token::TOK_ERROR);
+0022      for (int i = 0; i < num_states; i++) {
+0023        token_types_new[i + 1] = token_types[i];
+0024      }
+0025      for (int i = 0; i < other.num_states; i++) {
+0026        token_types_new[i + num_states + 1] = other.token_types[i];
+0027      }
+0028      std::vector<std::vector<std::vector<int>>> delta_new(
+0029          num_states_new, std::vector<std::vector<int>>(ALPHABET_SIZE + 1));
+0030      delta_new[0][ALPHABET_SIZE] = {start_state + 1,
+0031                                     other.start_state + num_states + 1};
+0032      for (int i = 0; i < num_states; i++) {
+0033        for (int alpha = 0; alpha < ALPHABET_SIZE + 1; alpha++) {
+0034          for (int v : delta[i][alpha]) {
+0035            delta_new[i + 1][alpha].push_back(v + 1);
+0036          }
+0037        }
+0038      }
+0039      for (int i = 0; i < other.num_states; i++) {
+0040        for (int alpha = 0; alpha < ALPHABET_SIZE + 1; alpha++) {
+0041          for (int v : other.delta[i][alpha]) {
+0042            delta_new[i + num_states + 1][alpha].push_back(v + num_states + 1);
+0043          }
+0044        }
+0045      }
+0046      NFA ret(num_states_new, 0, delta_new, token_types_new);
+0047      return ret;
+0048    }
+0049    NFA concat_nfa(const NFA &other) const {
+0050      int num_states_new = num_states + other.num_states;
+0051      std::vector<Token> token_types_new(num_states_new, Token::TOK_ERROR);
+0052      for (int i = 0; i < other.num_states; i++) {
+0053        token_types_new[i + num_states] = other.token_types[i];
+0054      }
+0055      std::vector<std::vector<std::vector<int>>> delta_new(
+0056          num_states_new, std::vector<std::vector<int>>(ALPHABET_SIZE + 1));
+0057      for (int i = 0; i < num_states; i++) {
+0058        for (int alpha = 0; alpha < ALPHABET_SIZE + 1; alpha++) {
+0059          for (int v : delta[i][alpha]) {
+0060            delta_new[i][alpha].push_back(v);
+0061          }
+0062        }
+0063        if (token_types[i] != Token::TOK_ERROR) {
+0064          delta_new[i][ALPHABET_SIZE].push_back(num_states + other.start_state);
+0065        }
+0066      }
+0067      for (int i = 0; i < other.num_states; i++) {
+0068        for (int alpha = 0; alpha < ALPHABET_SIZE + 1; alpha++) {
+0069          for (int v : other.delta[i][alpha]) {
+0070            delta_new[i + num_states][alpha].push_back(v + num_states);
+0071          }
+0072        }
+0073      }
+0074      NFA ret(num_states_new, start_state, delta_new, token_types_new);
+0075      return ret;
+0076    }
+0077    NFA kleene_star() const {
+0078      std::vector<Token> token_types_new(num_states + 1, Token::TOK_ERROR);
+0079      for (int i = 0; i < num_states; i++) {
+0080        token_types_new[i] = token_types[i];
+0081      }
+0082      token_types_new[num_states] = Token::TOK_FINAL_PLACEHOLDER;
+0083      std::vector<std::vector<std::vector<int>>> delta_new(
+0084          num_states + 1, std::vector<std::vector<int>>(ALPHABET_SIZE + 1));
+0085      for (int i = 0; i < num_states; i++) {
+0086        for (int alpha = 0; alpha < ALPHABET_SIZE + 1; alpha++) {
+0087          for (int v : delta[i][alpha]) {
+0088            delta_new[i][alpha].push_back(v);
+0089          }
+0090        }
+0091        if (token_types_new[i] != Token::TOK_ERROR) {
+0092          delta_new[i][ALPHABET_SIZE].push_back(num_states);
+0093        }
+0094      }
+0095      delta_new[num_states][ALPHABET_SIZE] = {start_state};
+0096      NFA ret(num_states + 1, num_states, delta_new, token_types_new);
+0097      return ret;
+0098    }
+0099    DFA to_dfa() const {
+0100      std::vector<std::vector<int>> reverse_eps_transition(num_states);
+0101      for (int i = 0; i < num_states; i++) {
+0102        for (int j : delta[i][ALPHABET_SIZE]) {
+0103          reverse_eps_transition[j].push_back(i);
+0104        }
+0105      }
+0106      std::vector<std::unordered_set<int>> e(num_states);
+0107      for (int i = 0; i < num_states; i++) {
+0108        e[i].insert(i);
+0109      }
+0110      std::unordered_set<int> worklist;
+0111      for (int i = 0; i < num_states; i++) {
+0112        worklist.insert(i);
+0113      }
+0114      while (!worklist.empty()) {
+0115        int n = *worklist.begin();
+0116        worklist.erase(n);
+0117        std::unordered_set<int> t;
+0118        t.insert(n);
+0119        for (int v : delta[n][ALPHABET_SIZE]) {
+0120          for (int w : e[v]) {
+0121            t.insert(w);
+0122          }
+0123        }
+0124        if (t != e[n]) {
+0125          e[n] = t;
+0126          for (int v : reverse_eps_transition[n]) {
+0127            worklist.insert(v);
+0128          }
+0129        }
+0130      }
+0131      std::unordered_map<std::unordered_set<int>, int, SetHash> Q;
+0132      std::stack<std::unordered_set<int>> worklist2;
+0133      std::unordered_map<int, std::array<int, ALPHABET_SIZE>> delta_dfa_map;
+0134      std::unordered_set<int> q0 = e[start_state];
+0135      int cnt = 0;
+0136      Q[q0] = cnt++;
+0137      worklist2.push(q0);
+0138      while (!worklist2.empty()) {
+0139        std::unordered_set<int> q = worklist2.top();
+0140        worklist2.pop();
+0141        for (int alpha = 0; alpha < ALPHABET_SIZE; alpha++) {
+0142          std::unordered_set<int> temp;
+0143          for (int state : q) {
+0144            for (int next_state : delta[state][alpha]) {
+0145              temp.insert(next_state);
+0146            }
+0147          }
+0148          std::unordered_set<int> temp2;
+0149          for (int state : temp) {
+0150            for (int state2 : e[state]) {
+0151              temp2.insert(state2);
+0152            }
+0153          }
+0154          if (Q.find(temp2) == Q.end()) {
+0155            Q[temp2] = cnt++;
+0156            worklist2.push(temp2);
+0157          }
+0158          delta_dfa_map[Q[q]][alpha] = Q[temp2];
+0159        }
+0160      }
+0161      std::vector<Token> token_types_dfa(cnt, Token::TOK_ERROR);
+0162      for (const auto &pair : Q) {
+0163        for (int x : pair.first) {
+0164          token_types_dfa[pair.second] =
+0165              max(token_types_dfa[pair.second], token_types[x]);
+0166        }
+0167      }
+0168      std::vector<std::vector<int>> delta_dfa(cnt,
+0169                                              std::vector<int>(ALPHABET_SIZE));
+0170      for (int i = 0; i < cnt; i++) {
+0171        for (int alpha = 0; alpha < ALPHABET_SIZE; alpha++) {
+0172          delta_dfa[i][alpha] = delta_dfa_map[i][alpha];
+0173        }
+0174      }
+0175      DFA ret(cnt, 0, delta_dfa, token_types_dfa);
+0176      return ret;
+0177    }
+0178  };
+
+
++-----------------------------------------------------------------------------+
+| include/lexer/regex_to_nfa.hpp                                               |
++-----------------------------------------------------------------------------+
+
+0001  #pragma once
+0002  #include "nfa.hpp"
+0003  #include <stack>
+0004  #include <string>
+0005  inline bool is_operator(char x) {
+0006    return x == '*' || x == '.' || x == '+' || x == '(' || x == ')';
+0007  }
+0008  inline bool concat_valid(const std::string &regex, int i, bool escaped) {
+0009    return (escaped || regex[i] == '*' ||
+0010            regex[i] != '\\' && !is_operator(regex[i]) || regex[i] == ')') &&
+0011           (!is_operator(regex[i + 1]) || regex[i + 1] == '(');
+0012  }
+0013  inline std::string postfix(const std::string &regex) {
+0014    std::string regex2;
+0015    bool escaped = false;
+0016    for (int i = 0; i < regex.size(); i++) {
+0017      regex2.push_back(regex[i]);
+0018      if (i < regex.size() - 1 && concat_valid(regex, i, escaped)) {
+0019        regex2.push_back('.');
+0020      }
+0021      if (!escaped) {
+0022        if (regex[i] == '\\') {
+0023          escaped = true;
+0024        }
+0025      } else {
+0026        escaped = false;
+0027      }
+0028    }
+0029    std::string ret;
+0030    std::stack<char> stack;
+0031    escaped = false;
+0032    for (int i = 0; i < regex2.size(); i++) {
+0033      if (regex2[i] == '\\' && !escaped) {
+0034        ret.push_back('\\');
+0035      } else if (escaped || !is_operator(regex2[i])) {
+0036        ret.push_back(regex2[i]);
+0037      } else {
+0038        if (regex2[i] == '(') {
+0039          stack.push('(');
+0040        } else if (regex2[i] == ')') {
+0041          while (!stack.empty() && stack.top() != '(') {
+0042            char x = stack.top();
+0043            stack.pop();
+0044            ret.push_back(x);
+0045          }
+0046          if (!stack.empty()) {
+0047            stack.pop();
+0048          }
+0049        } else {
+0050          if (regex2[i] == '*') {
+0051            ret.push_back('*');
+0052          } else {
+0053            while (!stack.empty() && stack.top() == '.') {
+0054              char x = stack.top();
+0055              stack.pop();
+0056              ret.push_back(x);
+0057            }
+0058            stack.push(regex2[i]);
+0059          }
+0060        }
+0061      }
+0062      if (!escaped) {
+0063        if (regex2[i] == '\\') {
+0064          escaped = true;
+0065        }
+0066      } else {
+0067        escaped = false;
+0068      }
+0069    }
+0070    while (!stack.empty()) {
+0071      char x = stack.top();
+0072      stack.pop();
+0073      ret.push_back(x);
+0074    }
+0075    return ret;
+0076  }
+0077  inline NFA regex_to_nfa(const std::string &regex) {
+0078    if (regex.empty()) {
+0079      std::vector<std::vector<std::vector<int>>> delta(
+0080          1, std::vector<std::vector<int>>(ALPHABET_SIZE + 1));
+0081      std::vector<Token> token_types(1);
+0082      token_types[0] = Token::TOK_FINAL_PLACEHOLDER;
+0083      return NFA(1, 0, delta, token_types);
+0084    }
+0085    std::string postfix_regex = postfix(regex);
+0086    std::stack<NFA> s;
+0087    bool escaped = false;
+0088    for (int i = 0; i < postfix_regex.size(); i++) {
+0089      if (is_operator(postfix_regex[i]) && !escaped) {
+0090        if (postfix_regex[i] == '*') {
+0091          NFA nfa1 = s.top();
+0092          s.pop();
+0093          NFA nfa2 = nfa1.kleene_star();
+0094          s.push(nfa2);
+0095        } else {
+0096          NFA nfa2 = s.top();
+0097          s.pop();
+0098          NFA nfa1 = s.top();
+0099          s.pop();
+0100          if (postfix_regex[i] == '+') {
+0101            s.push(nfa1.union_nfa(nfa2));
+0102          } else {
+0103            s.push(nfa1.concat_nfa(nfa2));
+0104          }
+0105        }
+0106      } else {
+0107        if (postfix_regex[i] == 'e' && escaped) {
+0108          std::vector<Token> token_types2(1, Token::TOK_FINAL_PLACEHOLDER);
+0109          std::vector<std::vector<std::vector<int>>> delta2(
+0110              1, std::vector<std::vector<int>>(ALPHABET_SIZE + 1));
+0111          NFA nfa2(1, 0, delta2, token_types2);
+0112          s.push(nfa2);
+0113        } else if (postfix_regex[i] == '?' && escaped) {
+0114          std::vector<Token> token_types2(1, Token::TOK_FINAL_PLACEHOLDER);
+0115          std::vector<std::vector<std::vector<int>>> delta2(
+0116              1, std::vector<std::vector<int>>(ALPHABET_SIZE + 1));
+0117          for (int alpha = 0; alpha < ALPHABET_SIZE; alpha++) {
+0118            if (alpha != '\n') {
+0119              delta2[0][static_cast<unsigned char>(alpha)].push_back(0);
+0120            }
+0121          }
+0122          NFA nfa2(1, 0, delta2, token_types2);
+0123          s.push(nfa2);
+0124        } else if (postfix_regex[i] != '\\' || escaped) {
+0125          std::vector<Token> token_types2(2, Token::TOK_ERROR);
+0126          token_types2[1] = Token::TOK_FINAL_PLACEHOLDER;
+0127          std::vector<std::vector<std::vector<int>>> delta2(
+0128              2, std::vector<std::vector<int>>(ALPHABET_SIZE + 1));
+0129          delta2[0][static_cast<unsigned char>(postfix_regex[i])].push_back(1);
+0130          NFA nfa2(2, 0, delta2, token_types2);
+0131          s.push(nfa2);
+0132        }
+0133      }
+0134      if (!escaped) {
+0135        if (postfix_regex[i] == '\\') {
+0136          escaped = true;
+0137        }
+0138      } else {
+0139        escaped = false;
+0140      }
+0141    }
+0142    NFA nfa_final = s.top();
+0143    s.pop();
+0144    return nfa_final;
+0145  }
+0146  inline DFA regex_to_dfa(const std::vector<std::string> &regexes,
+0147                          const std::vector<Token> &tokens) {
+0148    std::vector<std::vector<std::vector<int>>> delta(
+0149        1, std::vector<std::vector<int>>(ALPHABET_SIZE + 1));
+0150    std::vector<Token> token_types(1, Token::TOK_ERROR);
+0151    NFA nfa(1, 0, delta, token_types);
+0152    for (int i = 0; i < regexes.size(); i++) {
+0153      NFA nfa_current = regex_to_nfa(regexes[i]);
+0154      for (int state = 0; state < nfa_current.num_states; state++) {
+0155        if (nfa_current.token_types[state] == Token::TOK_FINAL_PLACEHOLDER) {
+0156          nfa_current.token_types[state] = tokens[i];
+0157        }
+0158      }
+0159      nfa = nfa.union_nfa(nfa_current);
+0160    }
+0161    return nfa.to_dfa().minimize();
+0162  }
+
+
++-----------------------------------------------------------------------------+
+| include/lexer/set_hash.hpp                                                   |
++-----------------------------------------------------------------------------+
+
+0001  #pragma once
+0002  #include <cstddef>
+0003  #include <functional>
+0004  #include <unordered_set>
+0005  struct SetHash {
+0006    size_t operator()(const std::unordered_set<int> &set) const {
+0007      size_t hash = 0;
+0008      for (int x : set) {
+0009        size_t h = std::hash<int>()(x);
+0010        h ^= h >> 16;
+0011        h *= 0x85ebca6b;
+0012        h ^= h >> 13;
+0013        h *= 0xc2b2ae35;
+0014        h ^= h >> 16;
+0015        hash ^= h;
+0016      }
+0017      return hash;
+0018    }
+0019  };
+
+
++-----------------------------------------------------------------------------+
+| include/lexer/token.hpp                                                      |
++-----------------------------------------------------------------------------+
+
+0001  #pragma once
+0002  #define TOKEN_LIST                                                             \
+0003    X(TOK_FN)                                                                    \
+0004    X(TOK_LET)                                                                   \
+0005    X(TOK_RETURN)                                                                \
+0006    X(TOK_PRINT)                                                                 \
+0007    X(TOK_PRINTLN)                                                               \
+0008    X(TOK_CONST)                                                                 \
+0009    X(TOK_TENSOR)                                                                \
+0010    X(TOK_MATRIX)                                                                \
+0011    X(TOK_VECTOR)                                                                \
+0012    X(TOK_SIZE)                                                                  \
+0013    X(TOK_INT)                                                                   \
+0014    X(TOK_FLOAT)                                                                 \
+0015    X(TOK_BOOL)                                                                  \
+0016    X(TOK_IF)                                                                    \
+0017    X(TOK_ELSE)                                                                  \
+0018    X(TOK_RANGE)                                                                 \
+0019    X(TOK_FOR)                                                                   \
+0020    X(TOK_WHILE)                                                                 \
+0021    X(TOK_IN)                                                                    \
+0022    X(TOK_BREAK)                                                                 \
+0023    X(TOK_CONTINUE)                                                              \
+0024    X(TOK_TRUE)                                                                  \
+0025    X(TOK_FALSE)                                                                 \
+0026    X(TOK_INT_LIT)                                                               \
+0027    X(TOK_FLOAT_LIT)                                                             \
+0028    X(TOK_ASSIGN)                                                                \
+0029    X(TOK_PLUS)                                                                  \
+0030    X(TOK_MINUS)                                                                 \
+0031    X(TOK_MUL)                                                                   \
+0032    X(TOK_DIV)                                                                   \
+0033    X(TOK_MOD)                                                                   \
+0034    X(TOK_MAT_MUL)                                                               \
+0035    X(TOK_MAT_INV)                                                               \
+0036    X(TOK_EQ)                                                                    \
+0037    X(TOK_NEQ)                                                                   \
+0038    X(TOK_LESS)                                                                  \
+0039    X(TOK_LEQ)                                                                   \
+0040    X(TOK_GREATER)                                                               \
+0041    X(TOK_GEQ)                                                                   \
+0042    X(TOK_AND)                                                                   \
+0043    X(TOK_BITWISE_AND)                                                           \
+0044    X(TOK_OR)                                                                    \
+0045    X(TOK_BITWISE_OR)                                                            \
+0046    X(TOK_NOT)                                                                   \
+0047    X(TOK_BITWISE_NOT)                                                           \
+0048    X(TOK_BITWISE_XOR)                                                           \
+0049    X(TOK_TRANSPOSE)                                                             \
+0050    X(TOK_ARROW)                                                                 \
+0051    X(TOK_COLON)                                                                 \
+0052    X(TOK_COMMA)                                                                 \
+0053    X(TOK_SEMI)                                                                  \
+0054    X(TOK_DOT)                                                                   \
+0055    X(TOK_LPAREN)                                                                \
+0056    X(TOK_RPAREN)                                                                \
+0057    X(TOK_LBRACKET)                                                              \
+0058    X(TOK_RBRACKET)                                                              \
+0059    X(TOK_LBRACE)                                                                \
+0060    X(TOK_RBRACE)                                                                \
+0061    X(TOK_COMMENT)                                                               \
+0062    X(TOK_ID)                                                                    \
+0063    X(TOK_EOF)                                                                   \
+0064    X(TOK_FINAL_PLACEHOLDER)                                                     \
+0065    X(TOK_ERROR)                                                                 \
+0066    X(TOK_STRING_LIT)
+0067  #define X(name) name,
+0068  enum class Token { TOKEN_LIST };
+0069  #undef X
+0070  #define X(name) #name,
+0071  constexpr const char *token_names[] = {TOKEN_LIST};
+0072  #undef X
+
+
++-----------------------------------------------------------------------------+
+| include/lexer/token_priority.hpp                                             |
++-----------------------------------------------------------------------------+
+
+0001  #pragma once
+0002  #include "token.hpp"
+0003  inline Token max(Token t1, Token t2) {
+0004    return static_cast<int>(t1) < static_cast<int>(t2) ? t1 : t2;
+0005  }
+
+
++-----------------------------------------------------------------------------+
+| include/parser/additive_op_node.hpp                                          |
++-----------------------------------------------------------------------------+
+
+0001  #pragma once
+0002  enum class AdditiveOpNode { PLUS, MINUS };
+
+
++-----------------------------------------------------------------------------+
+| include/parser/ast.hpp                                                       |
++-----------------------------------------------------------------------------+
+
+0001  #pragma once
+0002  #include "additive_op_node.hpp"
+0003  #include "bitwise_op_node.hpp"
+0004  #include "equality_op_node.hpp"
+0005  #include "lexer/lexeme.hpp"
+0006  #include "logical_op_node.hpp"
+0007  #include "multiplicative_op_node.hpp"
+0008  #include "node.hpp"
+0009  #include "postfix_op_node.hpp"
+0010  #include "print_node.hpp"
+0011  #include "relational_op_node.hpp"
+0012  #include "type.hpp"
+0013  #include "unary_op_node.hpp"
+0014  struct AST {
+0015    Node node;
+0016    std::variant<int64_t, double, bool, std::string, AdditiveOpNode,
+0017                 BitwiseOpNode, EqualityOpNode, MultiplicativeOpNode,
+0018                 PostfixOpNode, TypeNode, UnaryOpNode, PrintNode,
+0019                 RelationalOpNode, LogicalOpNode>
+0020        v;
+0021    std::vector<std::unique_ptr<AST>> children;
+0022    Type type;
+0023    Type ret_type;
+0024    Lexeme lexeme;
+0025  };
+
+
++-----------------------------------------------------------------------------+
+| include/parser/bitwise_op_node.hpp                                           |
++-----------------------------------------------------------------------------+
+
+0001  #pragma once
+0002  enum class BitwiseOpNode { BITWISE_OR, BITWISE_XOR, BITWISE_AND };
+
+
++-----------------------------------------------------------------------------+
+| include/parser/equality_op_node.hpp                                          |
++-----------------------------------------------------------------------------+
+
+0001  #pragma once
+0002  enum class EqualityOpNode { EQ, NEQ };
+
+
++-----------------------------------------------------------------------------+
+| include/parser/logical_op_node.hpp                                           |
++-----------------------------------------------------------------------------+
+
+0001  #pragma once
+0002  enum class LogicalOpNode { OR, AND };
+
+
++-----------------------------------------------------------------------------+
+| include/parser/multiplicative_op_node.hpp                                    |
++-----------------------------------------------------------------------------+
+
+0001  #pragma once
+0002  enum class MultiplicativeOpNode { MUL, DIV, MOD, MAT_MUL };
+
+
++-----------------------------------------------------------------------------+
+| include/parser/node.hpp                                                      |
++-----------------------------------------------------------------------------+
+
+0001  #pragma once
+0002  enum class Node {
+0003    PROGRAM,
+0004    CONST_DECL,
+0005    FUNCTION_DECL,
+0006    PARAM,
+0007    BLOCK,
+0008    VAR_DECL,
+0009    VAR_DEF,
+0010    IF_STMT,
+0011    WHILE_STMT,
+0012    FOR_STMT,
+0013    RETURN_STMT,
+0014    PRINT_STMT,
+0015    EXPR_STMT,
+0016    TYPE,
+0017    ASSIGN,
+0018    RANGE,
+0019    BINARY_OP,
+0020    UNARY_OP,
+0021    POSTFIX_OP,
+0022    FN_CALL,
+0023    INT_LIT,
+0024    FLOAT_LIT,
+0025    BOOL,
+0026    ID,
+0027    TENSOR_LIT,
+0028    STRING_LIT,
+0029    TENSOR_INIT
+0030  };
+
+
++-----------------------------------------------------------------------------+
+| include/parser/parser.hpp                                                    |
++-----------------------------------------------------------------------------+
+
+0001  #include "ast.hpp"
+0002  #include <iostream>
+0003  struct Parser {
+0004    const std::vector<Lexeme> &lexemes;
+0005    size_t pos;
+0006    Parser(const std::vector<Lexeme> &lexemes) : lexemes(lexemes), pos(0) {}
+0007    const Lexeme &peek() const { return lexemes[pos]; }
+0008    void advance() { pos++; }
+0009    Token tok() const { return peek().tok; }
+0010    [[noreturn]] void error_function() const {
+0011      std::cerr << "Parsing error in line " << peek().line_number
+0012                << " at position " << peek().col << "\n";
+0013      std::exit(1);
+0014    }
+0015    bool check(Token t) const { return tok() == t; }
+0016    bool match(Token t) {
+0017      if (tok() == t) {
+0018        advance();
+0019        return true;
+0020      }
+0021      return false;
+0022    }
+0023    void consume(Token t) {
+0024      if (tok() == t) {
+0025        advance();
+0026        return;
+0027      }
+0028      error_function();
+0029    }
+0030    bool is_eof() const { return tok() == Token::TOK_EOF; }
+0031    std::unique_ptr<AST> parse_program();
+0032    std::unique_ptr<AST> parse_id();
+0033    std::unique_ptr<AST> parse_type();
+0034    std::unique_ptr<AST> parse_base_type();
+0035    std::unique_ptr<AST> parse_int_lit();
+0036    std::unique_ptr<AST> parse_expr();
+0037    std::unique_ptr<AST> parse_assign_expr();
+0038    std::unique_ptr<AST> parse_range_expr();
+0039    std::unique_ptr<AST> parse_logical_or_expr();
+0040    std::unique_ptr<AST> parse_logical_and_expr();
+0041    std::unique_ptr<AST> parse_bitwise_or_expr();
+0042    std::unique_ptr<AST> parse_bitwise_xor_expr();
+0043    std::unique_ptr<AST> parse_bitwise_and_expr();
+0044    std::unique_ptr<AST> parse_equality_expr();
+0045    std::unique_ptr<AST> parse_relational_expr();
+0046    std::unique_ptr<AST> parse_additive_expr();
+0047    std::unique_ptr<AST> parse_multiplicative_expr();
+0048    std::unique_ptr<AST> parse_unary_expr();
+0049    std::unique_ptr<AST> parse_postfix_expr();
+0050    void fill_expr_list(std::unique_ptr<AST> &ast);
+0051    std::unique_ptr<AST> parse_primary_expr();
+0052    std::unique_ptr<AST> parse_const_decl();
+0053    std::unique_ptr<AST> parse_function_decl();
+0054    void fill_param_list(std::unique_ptr<AST> &ast);
+0055    std::unique_ptr<AST> parse_param();
+0056    std::unique_ptr<AST> parse_block();
+0057    std::unique_ptr<AST> parse_var_decl();
+0058    std::unique_ptr<AST> parse_if_stmt();
+0059    std::unique_ptr<AST> parse_while_stmt();
+0060    std::unique_ptr<AST> parse_for_stmt();
+0061    std::unique_ptr<AST> parse_return_stmt();
+0062    std::unique_ptr<AST> parse_print_stmt();
+0063    std::unique_ptr<AST> parse_expr_stmt();
+0064  };
+0065  inline std::unique_ptr<AST> Parser::parse_program() {
+0066    auto ast = std::make_unique<AST>();
+0067    ast->lexeme = peek();
+0068    ast->node = Node::PROGRAM;
+0069    while (!is_eof()) {
+0070      if (check(Token::TOK_LET)) {
+0071        ast->children.push_back(parse_var_decl());
+0072      } else if (check(Token::TOK_CONST)) {
+0073        ast->children.push_back(parse_const_decl());
+0074      } else if (check(Token::TOK_FN)) {
+0075        ast->children.push_back(parse_function_decl());
+0076      } else {
+0077        error_function();
+0078      }
+0079    }
+0080    return ast;
+0081  }
+0082  inline std::unique_ptr<AST> Parser::parse_id() {
+0083    auto ast = std::make_unique<AST>();
+0084    ast->lexeme = peek();
+0085    consume(Token::TOK_ID);
+0086    ast->node = Node::ID;
+0087    ast->v = ast->lexeme.s;
+0088    return ast;
+0089  }
+0090  inline std::unique_ptr<AST> Parser::parse_type() {
+0091    auto ast = std::make_unique<AST>();
+0092    ast->lexeme = peek();
+0093    ast->node = Node::TYPE;
+0094    if (match(Token::TOK_VECTOR)) {
+0095      ast->v = TypeNode::VECTOR;
+0096      consume(Token::TOK_LESS);
+0097      auto base_type = parse_base_type()->type;
+0098      consume(Token::TOK_COMMA);
+0099      std::vector<int64_t> sizes;
+0100      sizes.push_back(std::get<int64_t>(parse_int_lit()->v));
+0101      auto t = Type::from_type_node(std::get<TypeNode>(ast->v));
+0102      t.base_type = base_type.type_node;
+0103      t.sizes = sizes;
+0104      ast->type = t;
+0105      consume(Token::TOK_GREATER);
+0106    } else if (match(Token::TOK_MATRIX)) {
+0107      ast->v = TypeNode::MATRIX;
+0108      consume(Token::TOK_LESS);
+0109      auto base_type = parse_base_type()->type;
+0110      consume(Token::TOK_COMMA);
+0111      std::vector<int64_t> sizes;
+0112      sizes.push_back(std::get<int64_t>(parse_int_lit()->v));
+0113      consume(Token::TOK_COMMA);
+0114      sizes.push_back(std::get<int64_t>(parse_int_lit()->v));
+0115      auto t = Type::from_type_node(std::get<TypeNode>(ast->v));
+0116      t.base_type = base_type.type_node;
+0117      t.sizes = sizes;
+0118      ast->type = t;
+0119      consume(Token::TOK_GREATER);
+0120    } else if (match(Token::TOK_TENSOR)) {
+0121      ast->v = TypeNode::TENSOR;
+0122      consume(Token::TOK_LESS);
+0123      auto base_type = parse_base_type()->type;
+0124      consume(Token::TOK_COMMA);
+0125      std::vector<int64_t> sizes;
+0126      sizes.push_back(std::get<int64_t>(parse_int_lit()->v));
+0127      consume(Token::TOK_COMMA);
+0128      sizes.push_back(std::get<int64_t>(parse_int_lit()->v));
+0129      consume(Token::TOK_COMMA);
+0130      sizes.push_back(std::get<int64_t>(parse_int_lit()->v));
+0131      while (match(Token::TOK_COMMA)) {
+0132        sizes.push_back(std::get<int64_t>(parse_int_lit()->v));
+0133      }
+0134      auto t = Type::from_type_node(std::get<TypeNode>(ast->v));
+0135      t.base_type = base_type.type_node;
+0136      t.sizes = sizes;
+0137      ast->type = t;
+0138      consume(Token::TOK_GREATER);
+0139    } else {
+0140      ast = parse_base_type();
+0141    }
+0142    return ast;
+0143  }
+0144  inline std::unique_ptr<AST> Parser::parse_base_type() {
+0145    auto ast = std::make_unique<AST>();
+0146    ast->lexeme = peek();
+0147    ast->node = Node::TYPE;
+0148    if (match(Token::TOK_INT)) {
+0149      ast->v = TypeNode::INT;
+0150      ast->type = Type::from_type_node(std::get<TypeNode>(ast->v));
+0151    } else if (match(Token::TOK_FLOAT)) {
+0152      ast->v = TypeNode::FLOAT;
+0153      ast->type = Type::from_type_node(std::get<TypeNode>(ast->v));
+0154    } else if (match(Token::TOK_BOOL)) {
+0155      ast->v = TypeNode::BOOL;
+0156      ast->type = Type::from_type_node(std::get<TypeNode>(ast->v));
+0157    } else {
+0158      error_function();
+0159    }
+0160    return ast;
+0161  }
+0162  inline std::unique_ptr<AST> Parser::parse_int_lit() {
+0163    if (!check(Token::TOK_INT_LIT)) {
+0164      error_function();
+0165    }
+0166    auto ast = std::make_unique<AST>();
+0167    ast->lexeme = peek();
+0168    ast->node = Node::INT_LIT;
+0169    ast->v = static_cast<int64_t>(std::stoll(peek().s));
+0170    advance();
+0171    return ast;
+0172  }
+0173  inline std::unique_ptr<AST> Parser::parse_expr() { return parse_assign_expr(); }
+0174  inline std::unique_ptr<AST> Parser::parse_assign_expr() {
+0175    auto left = parse_range_expr();
+0176    if (check(Token::TOK_ASSIGN)) {
+0177      auto lex = peek();
+0178      advance();
+0179      auto right = parse_assign_expr();
+0180      auto ast = std::make_unique<AST>();
+0181      ast->node = Node::ASSIGN;
+0182      ast->children.push_back(std::move(left));
+0183      ast->children.push_back(std::move(right));
+0184      ast->lexeme = lex;
+0185      return ast;
+0186    }
+0187    return left;
+0188  }
+0189  inline std::unique_ptr<AST> Parser::parse_range_expr() {
+0190    if (check(Token::TOK_RANGE)) {
+0191      auto lex = peek();
+0192      advance();
+0193      auto ast = std::make_unique<AST>();
+0194      ast->node = Node::RANGE;
+0195      consume(Token::TOK_LPAREN);
+0196      ast->children.push_back(parse_expr());
+0197      consume(Token::TOK_COMMA);
+0198      ast->children.push_back(parse_expr());
+0199      if (match(Token::TOK_COMMA)) {
+0200        ast->children.push_back(parse_expr());
+0201      }
+0202      consume(Token::TOK_RPAREN);
+0203      ast->lexeme = lex;
+0204      return ast;
+0205    }
+0206    return parse_logical_or_expr();
+0207  }
+0208  inline std::unique_ptr<AST> Parser::parse_logical_or_expr() {
+0209    auto left = parse_logical_and_expr();
+0210    while (check(Token::TOK_OR)) {
+0211      auto lex = peek();
+0212      advance();
+0213      auto right = parse_logical_and_expr();
+0214      auto ast = std::make_unique<AST>();
+0215      ast->node = Node::BINARY_OP;
+0216      ast->v = LogicalOpNode::OR;
+0217      ast->children.push_back(std::move(left));
+0218      ast->children.push_back(std::move(right));
+0219      left = std::move(ast);
+0220      left->lexeme = lex;
+0221    }
+0222    return left;
+0223  }
+0224  inline std::unique_ptr<AST> Parser::parse_logical_and_expr() {
+0225    auto left = parse_bitwise_or_expr();
+0226    while (check(Token::TOK_AND)) {
+0227      auto lex = peek();
+0228      advance();
+0229      auto right = parse_bitwise_or_expr();
+0230      auto ast = std::make_unique<AST>();
+0231      ast->node = Node::BINARY_OP;
+0232      ast->v = LogicalOpNode::AND;
+0233      ast->children.push_back(std::move(left));
+0234      ast->children.push_back(std::move(right));
+0235      left = std::move(ast);
+0236      left->lexeme = lex;
+0237    }
+0238    return left;
+0239  }
+0240  inline std::unique_ptr<AST> Parser::parse_bitwise_or_expr() {
+0241    auto left = parse_bitwise_xor_expr();
+0242    while (check(Token::TOK_BITWISE_OR)) {
+0243      auto lex = peek();
+0244      advance();
+0245      auto right = parse_bitwise_xor_expr();
+0246      auto ast = std::make_unique<AST>();
+0247      ast->node = Node::BINARY_OP;
+0248      ast->v = BitwiseOpNode::BITWISE_OR;
+0249      ast->children.push_back(std::move(left));
+0250      ast->children.push_back(std::move(right));
+0251      left = std::move(ast);
+0252      left->lexeme = lex;
+0253    }
+0254    return left;
+0255  }
+0256  inline std::unique_ptr<AST> Parser::parse_bitwise_xor_expr() {
+0257    auto left = parse_bitwise_and_expr();
+0258    while (check(Token::TOK_BITWISE_XOR)) {
+0259      auto lex = peek();
+0260      advance();
+0261      auto right = parse_bitwise_and_expr();
+0262      auto ast = std::make_unique<AST>();
+0263      ast->node = Node::BINARY_OP;
+0264      ast->v = BitwiseOpNode::BITWISE_XOR;
+0265      ast->children.push_back(std::move(left));
+0266      ast->children.push_back(std::move(right));
+0267      left = std::move(ast);
+0268      left->lexeme = lex;
+0269    }
+0270    return left;
+0271  }
+0272  inline std::unique_ptr<AST> Parser::parse_bitwise_and_expr() {
+0273    auto left = parse_equality_expr();
+0274    while (check(Token::TOK_BITWISE_AND)) {
+0275      auto lex = peek();
+0276      advance();
+0277      auto right = parse_equality_expr();
+0278      auto ast = std::make_unique<AST>();
+0279      ast->node = Node::BINARY_OP;
+0280      ast->v = BitwiseOpNode::BITWISE_AND;
+0281      ast->children.push_back(std::move(left));
+0282      ast->children.push_back(std::move(right));
+0283      left = std::move(ast);
+0284      left->lexeme = lex;
+0285    }
+0286    return left;
+0287  }
+0288  inline std::unique_ptr<AST> Parser::parse_equality_expr() {
+0289    auto left = parse_relational_expr();
+0290    while (check(Token::TOK_EQ) || check(Token::TOK_NEQ)) {
+0291      auto ast = std::make_unique<AST>();
+0292      ast->lexeme = peek();
+0293      if (match(Token::TOK_EQ)) {
+0294        ast->v = EqualityOpNode::EQ;
+0295      } else {
+0296        advance();
+0297        ast->v = EqualityOpNode::NEQ;
+0298      }
+0299      auto right = parse_relational_expr();
+0300      ast->node = Node::BINARY_OP;
+0301      ast->children.push_back(std::move(left));
+0302      ast->children.push_back(std::move(right));
+0303      left = std::move(ast);
+0304    }
+0305    return left;
+0306  }
+0307  inline std::unique_ptr<AST> Parser::parse_relational_expr() {
+0308    auto left = parse_additive_expr();
+0309    while (1) {
+0310      auto ast = std::make_unique<AST>();
+0311      if (check(Token::TOK_LESS)) {
+0312        ast->v = RelationalOpNode::LESS;
+0313        ast->lexeme = peek();
+0314        advance();
+0315      } else if (check(Token::TOK_LEQ)) {
+0316        ast->v = RelationalOpNode::LEQ;
+0317        ast->lexeme = peek();
+0318        advance();
+0319      } else if (check(Token::TOK_GREATER)) {
+0320        ast->v = RelationalOpNode::GREATER;
+0321        ast->lexeme = peek();
+0322        advance();
+0323      } else if (check(Token::TOK_GEQ)) {
+0324        ast->v = RelationalOpNode::GEQ;
+0325        ast->lexeme = peek();
+0326        advance();
+0327      } else {
+0328        break;
+0329      }
+0330      auto right = parse_additive_expr();
+0331      ast->node = Node::BINARY_OP;
+0332      ast->children.push_back(std::move(left));
+0333      ast->children.push_back(std::move(right));
+0334      left = std::move(ast);
+0335    }
+0336    return left;
+0337  }
+0338  inline std::unique_ptr<AST> Parser::parse_additive_expr() {
+0339    auto left = parse_multiplicative_expr();
+0340    while (check(Token::TOK_PLUS) || check(Token::TOK_MINUS)) {
+0341      auto ast = std::make_unique<AST>();
+0342      ast->lexeme = peek();
+0343      if (match(Token::TOK_PLUS)) {
+0344        ast->v = AdditiveOpNode::PLUS;
+0345      } else {
+0346        consume(Token::TOK_MINUS);
+0347        ast->v = AdditiveOpNode::MINUS;
+0348      }
+0349      auto right = parse_multiplicative_expr();
+0350      ast->node = Node::BINARY_OP;
+0351      ast->children.push_back(std::move(left));
+0352      ast->children.push_back(std::move(right));
+0353      left = std::move(ast);
+0354    }
+0355    return left;
+0356  }
+0357  inline std::unique_ptr<AST> Parser::parse_multiplicative_expr() {
+0358    auto left = parse_unary_expr();
+0359    while (check(Token::TOK_MUL) || check(Token::TOK_DIV) ||
+0360           check(Token::TOK_MOD) || check(Token::TOK_MAT_MUL)) {
+0361      auto ast = std::make_unique<AST>();
+0362      ast->lexeme = peek();
+0363      if (match(Token::TOK_MUL)) {
+0364        ast->v = MultiplicativeOpNode::MUL;
+0365      } else if (match(Token::TOK_DIV)) {
+0366        ast->v = MultiplicativeOpNode::DIV;
+0367      } else if (match(Token::TOK_MOD)) {
+0368        ast->v = MultiplicativeOpNode::MOD;
+0369      } else {
+0370        advance();
+0371        ast->v = MultiplicativeOpNode::MAT_MUL;
+0372      }
+0373      auto right = parse_unary_expr();
+0374      ast->node = Node::BINARY_OP;
+0375      ast->children.push_back(std::move(left));
+0376      ast->children.push_back(std::move(right));
+0377      left = std::move(ast);
+0378    }
+0379    return left;
+0380  }
+0381  inline std::unique_ptr<AST> Parser::parse_unary_expr() {
+0382    auto ast = std::make_unique<AST>();
+0383    ast->lexeme = peek();
+0384    if (match(Token::TOK_PLUS)) {
+0385      ast->node = Node::UNARY_OP;
+0386      ast->v = UnaryOpNode::PLUS;
+0387      ast->children.push_back(parse_unary_expr());
+0388      return ast;
+0389    }
+0390    if (match(Token::TOK_MINUS)) {
+0391      ast->node = Node::UNARY_OP;
+0392      ast->v = UnaryOpNode::MINUS;
+0393      ast->children.push_back(parse_unary_expr());
+0394      return ast;
+0395    }
+0396    if (match(Token::TOK_NOT)) {
+0397      ast->node = Node::UNARY_OP;
+0398      ast->v = UnaryOpNode::NOT;
+0399      ast->children.push_back(parse_unary_expr());
+0400      return ast;
+0401    }
+0402    if (match(Token::TOK_BITWISE_NOT)) {
+0403      ast->node = Node::UNARY_OP;
+0404      ast->v = UnaryOpNode::BITWISE_NOT;
+0405      ast->children.push_back(parse_unary_expr());
+0406      return ast;
+0407    }
+0408    return parse_postfix_expr();
+0409  }
+0410  inline std::unique_ptr<AST> Parser::parse_postfix_expr() {
+0411    auto left = parse_primary_expr();
+0412    while (1) {
+0413      auto ast = std::make_unique<AST>();
+0414      ast->lexeme = peek();
+0415      if (match(Token::TOK_LBRACKET)) {
+0416        ast->v = PostfixOpNode::INDEX;
+0417        ast->children.push_back(std::move(left));
+0418        fill_expr_list(ast);
+0419        consume(Token::TOK_RBRACKET);
+0420      } else if (match(Token::TOK_LPAREN)) {
+0421        ast->v = PostfixOpNode::ARGUMENT;
+0422        ast->children.push_back(std::move(left));
+0423        if (!match(Token::TOK_RPAREN)) {
+0424          fill_expr_list(ast);
+0425          consume(Token::TOK_RPAREN);
+0426        }
+0427      } else if (match(Token::TOK_DOT)) {
+0428        ast->children.push_back(std::move(left));
+0429        if (match(Token::TOK_SIZE)) {
+0430          ast->v = PostfixOpNode::DOT;
+0431        } else {
+0432          consume(Token::TOK_MAT_INV);
+0433          ast->v = PostfixOpNode::INVERSE;
+0434        }
+0435      } else if (match(Token::TOK_TRANSPOSE)) {
+0436        ast->v = PostfixOpNode::TRANSPOSE;
+0437        ast->children.push_back(std::move(left));
+0438      } else
+0439        break;
+0440      ast->node = Node::POSTFIX_OP;
+0441      left = std::move(ast);
+0442    }
+0443    return left;
+0444  }
+0445  inline std::unique_ptr<AST> Parser::parse_primary_expr() {
+0446    auto ast = std::make_unique<AST>();
+0447    if (check(Token::TOK_INT_LIT)) {
+0448      ast->node = Node::INT_LIT;
+0449      ast->v = static_cast<int64_t>(std::stoll(peek().s));
+0450      ast->lexeme = peek();
+0451      advance();
+0452    } else if (check(Token::TOK_FLOAT_LIT)) {
+0453      ast->node = Node::FLOAT_LIT;
+0454      ast->v = std::stod(peek().s);
+0455      ast->lexeme = peek();
+0456      advance();
+0457    } else if (check(Token::TOK_TRUE)) {
+0458      ast->node = Node::BOOL;
+0459      ast->v = true;
+0460      ast->lexeme = peek();
+0461      advance();
+0462    } else if (check(Token::TOK_FALSE)) {
+0463      ast->node = Node::BOOL;
+0464      ast->v = false;
+0465      ast->lexeme = peek();
+0466      advance();
+0467    } else if (check(Token::TOK_STRING_LIT)) {
+0468      ast->node = Node::STRING_LIT;
+0469      ast->v = peek().s;
+0470      ast->lexeme = peek();
+0471      advance();
+0472    } else if (check(Token::TOK_ID)) {
+0473      ast->node = Node::ID;
+0474      ast->v = peek().s;
+0475      ast->lexeme = peek();
+0476      advance();
+0477    } else if (match(Token::TOK_LPAREN)) {
+0478      ast = parse_expr();
+0479      consume(Token::TOK_RPAREN);
+0480    } else if (match(Token::TOK_LBRACKET)) {
+0481      ast->node = Node::TENSOR_LIT;
+0482      if (!match(Token::TOK_RBRACKET)) {
+0483        fill_expr_list(ast);
+0484        consume(Token::TOK_RBRACKET);
+0485      }
+0486    } else if (check(Token::TOK_VECTOR) || check(Token::TOK_MATRIX) || check(Token::TOK_TENSOR)) {
+0487      ast->node = Node::TENSOR_INIT;
+0488      ast->children.push_back(parse_type());
+0489      consume(Token::TOK_LPAREN);
+0490      ast->children.push_back(parse_expr());
+0491      consume(Token::TOK_RPAREN);
+0492    } else {
+0493      error_function();
+0494    }
+0495    return ast;
+0496  }
+0497  inline void Parser::fill_expr_list(std::unique_ptr<AST> &ast) {
+0498    ast->children.push_back(parse_expr());
+0499    while (match(Token::TOK_COMMA)) {
+0500      ast->children.push_back(parse_expr());
+0501    }
+0502  }
+0503  inline std::unique_ptr<AST> Parser::parse_const_decl() {
+0504    if (!check(Token::TOK_CONST))
+0505      error_function();
+0506    auto ast = std::make_unique<AST>();
+0507    ast->lexeme = peek();
+0508    advance();
+0509    ast->node = Node::CONST_DECL;
+0510    ast->children.push_back(parse_id());
+0511    if (match(Token::TOK_COLON)) {
+0512      ast->children.push_back(parse_type());
+0513    }
+0514    consume(Token::TOK_ASSIGN);
+0515    ast->children.push_back(parse_expr());
+0516    consume(Token::TOK_SEMI);
+0517    return ast;
+0518  }
+0519  inline std::unique_ptr<AST> Parser::parse_function_decl() {
+0520    if (!check(Token::TOK_FN))
+0521      error_function();
+0522    auto ast = std::make_unique<AST>();
+0523    ast->lexeme = peek();
+0524    advance();
+0525    ast->node = Node::FUNCTION_DECL;
+0526    ast->children.push_back(parse_id());
+0527    consume(Token::TOK_LPAREN);
+0528    if (!match(Token::TOK_RPAREN)) {
+0529      fill_param_list(ast);
+0530      consume(Token::TOK_RPAREN);
+0531    }
+0532    if (match(Token::TOK_ARROW)) {
+0533      ast->children.push_back(parse_type());
+0534    }
+0535    ast->children.push_back(parse_block());
+0536    return ast;
+0537  }
+0538  inline void Parser::fill_param_list(std::unique_ptr<AST> &ast) {
+0539    ast->children.push_back(parse_param());
+0540    while (match(Token::TOK_COMMA)) {
+0541      ast->children.push_back(parse_param());
+0542    }
+0543  }
+0544  inline std::unique_ptr<AST> Parser::parse_param() {
+0545    auto ast = std::make_unique<AST>();
+0546    ast->node = Node::PARAM;
+0547    ast->children.push_back(parse_id());
+0548    consume(Token::TOK_COLON);
+0549    bool is_const = false;
+0550    if (match(Token::TOK_CONST)) {
+0551      is_const = true;
+0552    }
+0553    ast->children.push_back(parse_type());
+0554    if (is_const) {
+0555      ast->children.back()->type.is_const = true;
+0556    }
+0557    ast->lexeme = ast->children[0]->lexeme;
+0558    return ast;
+0559  }
+0560  inline std::unique_ptr<AST> Parser::parse_block() {
+0561    auto ast = std::make_unique<AST>();
+0562    ast->node = Node::BLOCK;
+0563    ast->lexeme = peek();
+0564    consume(Token::TOK_LBRACE);
+0565    while (!match(Token::TOK_RBRACE)) {
+0566      if (check(Token::TOK_LET)) {
+0567        ast->children.push_back(parse_var_decl());
+0568      } else if (check(Token::TOK_CONST)) {
+0569        ast->children.push_back(parse_const_decl());
+0570      } else if (check(Token::TOK_IF)) {
+0571        ast->children.push_back(parse_if_stmt());
+0572      } else if (check(Token::TOK_WHILE)) {
+0573        ast->children.push_back(parse_while_stmt());
+0574      } else if (check(Token::TOK_FOR)) {
+0575        ast->children.push_back(parse_for_stmt());
+0576      } else if (check(Token::TOK_RETURN)) {
+0577        ast->children.push_back(parse_return_stmt());
+0578      } else if (check(Token::TOK_PRINT) || check(Token::TOK_PRINTLN)) {
+0579        ast->children.push_back(parse_print_stmt());
+0580      } else if (check(Token::TOK_LBRACE)) {
+0581        ast->children.push_back(parse_block());
+0582      } else {
+0583        ast->children.push_back(parse_expr_stmt());
+0584      }
+0585    }
+0586    return ast;
+0587  }
+0588  inline std::unique_ptr<AST> Parser::parse_var_decl() {
+0589    auto ast = std::make_unique<AST>();
+0590    ast->lexeme = peek();
+0591    consume(Token::TOK_LET);
+0592    ast->node = Node::VAR_DECL;
+0593    ast->children.push_back(parse_id());
+0594    if (match(Token::TOK_COLON)) {
+0595      ast->children.push_back(parse_type());
+0596      if (match(Token::TOK_ASSIGN)) {
+0597        ast->children.push_back(parse_expr());
+0598      }
+0599    } else {
+0600      consume(Token::TOK_ASSIGN);
+0601      ast->children.push_back(parse_expr());
+0602    }
+0603    consume(Token::TOK_SEMI);
+0604    return ast;
+0605  }
+0606  inline std::unique_ptr<AST> Parser::parse_if_stmt() {
+0607    auto ast = std::make_unique<AST>();
+0608    ast->lexeme = peek();
+0609    consume(Token::TOK_IF);
+0610    ast->node = Node::IF_STMT;
+0611    ast->children.push_back(parse_expr());
+0612    ast->children.push_back(parse_block());
+0613    if (match(Token::TOK_ELSE)) {
+0614      ast->children.push_back(parse_block());
+0615    }
+0616    return ast;
+0617  }
+0618  inline std::unique_ptr<AST> Parser::parse_while_stmt() {
+0619    auto ast = std::make_unique<AST>();
+0620    ast->lexeme = peek();
+0621    consume(Token::TOK_WHILE);
+0622    ast->node = Node::WHILE_STMT;
+0623    ast->children.push_back(parse_expr());
+0624    ast->children.push_back(parse_block());
+0625    return ast;
+0626  }
+0627  inline std::unique_ptr<AST> Parser::parse_for_stmt() {
+0628    auto ast = std::make_unique<AST>();
+0629    ast->lexeme = peek();
+0630    consume(Token::TOK_FOR);
+0631    ast->node = Node::FOR_STMT;
+0632    ast->children.push_back(parse_id());
+0633    consume(Token::TOK_IN);
+0634    ast->children.push_back(parse_expr());
+0635    ast->children.push_back(parse_block());
+0636    return ast;
+0637  }
+0638  inline std::unique_ptr<AST> Parser::parse_return_stmt() {
+0639    auto ast = std::make_unique<AST>();
+0640    ast->lexeme = peek();
+0641    consume(Token::TOK_RETURN);
+0642    ast->node = Node::RETURN_STMT;
+0643    if (!match(Token::TOK_SEMI)) {
+0644      ast->children.push_back(parse_expr());
+0645      consume(Token::TOK_SEMI);
+0646    }
+0647    return ast;
+0648  }
+0649  inline std::unique_ptr<AST> Parser::parse_print_stmt() {
+0650    auto ast = std::make_unique<AST>();
+0651    ast->lexeme = peek();
+0652    ast->node = Node::PRINT_STMT;
+0653    if (match(Token::TOK_PRINT)) {
+0654      ast->v = PrintNode::PRINT;
+0655    } else {
+0656      consume(Token::TOK_PRINTLN);
+0657      ast->v = PrintNode::PRINTLN;
+0658    }
+0659    if (check(Token::TOK_STRING_LIT)) {
+0660      auto str_ast = std::make_unique<AST>();
+0661      str_ast->node = Node::STRING_LIT;
+0662      str_ast->v = peek().s;
+0663      str_ast->lexeme = peek();
+0664      advance();
+0665      ast->children.push_back(std::move(str_ast));
+0666    } else {
+0667      ast->children.push_back(parse_expr());
+0668    }
+0669    consume(Token::TOK_SEMI);
+0670    return ast;
+0671  }
+0672  inline std::unique_ptr<AST> Parser::parse_expr_stmt() {
+0673    auto ast = std::make_unique<AST>();
+0674    ast->node = Node::EXPR_STMT;
+0675    ast->children.push_back(parse_expr());
+0676    ast->lexeme = ast->children[0]->lexeme;
+0677    consume(Token::TOK_SEMI);
+0678    return ast;
+0679  }
+
+
++-----------------------------------------------------------------------------+
+| include/parser/postfix_op_node.hpp                                           |
++-----------------------------------------------------------------------------+
+
+0001  #pragma once
+0002  enum class PostfixOpNode { INDEX, ARGUMENT, DOT, TRANSPOSE, INVERSE };
+
+
++-----------------------------------------------------------------------------+
+| include/parser/print_node.hpp                                                |
++-----------------------------------------------------------------------------+
+
+0001  #pragma once
+0002  enum class PrintNode { PRINT, PRINTLN };
+
+
++-----------------------------------------------------------------------------+
+| include/parser/relational_op_node.hpp                                        |
++-----------------------------------------------------------------------------+
+
+0001  #pragma once
+0002  enum class RelationalOpNode { LESS, LEQ, GREATER, GEQ };
+
+
++-----------------------------------------------------------------------------+
+| include/parser/type.hpp                                                      |
++-----------------------------------------------------------------------------+
+
+0001  #pragma once
+0002  #include "parser/type_node.hpp"
+0003  #include <vector>
+0004  struct Type {
+0005    bool is_null = true;
+0006    TypeNode type_node = TypeNode::VOID;
+0007    TypeNode base_type = TypeNode::VOID;
+0008    std::vector<int64_t> sizes;
+0009    bool is_const = false;
+0010    static Type error() {
+0011      Type err;
+0012      err.is_null = true;
+0013      return err;
+0014    }
+0015    static Type from_type_node(TypeNode type_node) {
+0016      Type t;
+0017      t.is_null = false;
+0018      t.type_node = type_node;
+0019      return t;
+0020    }
+0021    bool operator==(const Type &other) const {
+0022      if (is_null != other.is_null || type_node != other.type_node || is_const != other.is_const)
+0023        return false;
+0024      if (type_node == TypeNode::VECTOR || type_node == TypeNode::MATRIX ||
+0025          type_node == TypeNode::TENSOR)
+0026        return base_type == other.base_type && sizes == other.sizes;
+0027      return true;
+0028    }
+0029    bool operator!=(const Type &other) const { return !(*this == other); }
+0030  };
+
+
++-----------------------------------------------------------------------------+
+| include/parser/type_node.hpp                                                 |
++-----------------------------------------------------------------------------+
+
+0001  #pragma once
+0002  enum class TypeNode { VOID, INT, FLOAT, BOOL, STRING, MATRIX, VECTOR, TENSOR };
+
+
++-----------------------------------------------------------------------------+
+| include/parser/unary_op_node.hpp                                             |
++-----------------------------------------------------------------------------+
+
+0001  #pragma once
+0002  enum class UnaryOpNode { PLUS, MINUS, NOT, BITWISE_NOT };
+
+
++-----------------------------------------------------------------------------+
+| include/semantic_analyzer/semantic_analyzer.hpp                              |
++-----------------------------------------------------------------------------+
+
+0001  #pragma once
+0002  #include "parser/ast.hpp"
+0003  #include "parser/type.hpp"
+0004  #include "symbol_table.hpp"
+0005  #include <iostream>
+0006  struct SemanticAnalyzer {
+0007    std::unique_ptr<SymbolTable> st;
+0008    std::optional<TypeNode> curr_func_ret_type;
+0009    SemanticAnalyzer(AST *const root) : st(std::make_unique<SymbolTable>()) {
+0010      visit_program(root);
+0011    }
+0012    [[noreturn]] void mismatched_dimensions_error(AST *const root) {
+0013      std::cerr << "Mismatched dimensions error in line "
+0014                << root->lexeme.line_number << " at position " << root->lexeme.col
+0015                << "\n";
+0016      exit(1);
+0017    }
+0018    [[noreturn]] void invalid_range_expr(AST *const root) {
+0019      std::cerr << "Error: Invalid range expression in line "
+0020                << root->lexeme.line_number << " at position " << root->lexeme.col
+0021                << "\n";
+0022      exit(1);
+0023    }
+0024    [[noreturn]] void invalid_matrix_dimensions_error(AST *const root) {
+0025      std::cerr << "Error: Matrix to be inversed must be square; Line "
+0026                << root->lexeme.line_number << ", Position " << root->lexeme.col
+0027                << "\n";
+0028      exit(1);
+0029    }
+0030    [[noreturn]] void invalid_matrix_inverse_argument_error(AST *const root) {
+0031      std::cerr << "Error: Argument to matrix inverse must be a matrix; Line "
+0032                << root->lexeme.line_number << ", Position " << root->lexeme.col
+0033                << "\n";
+0034      exit(1);
+0035    }
+0036    [[noreturn]] void duplicate_parameter_name_error(AST *const root) {
+0037      std::cerr << "Error: Duplicate parameter name in line "
+0038                << root->lexeme.line_number << " at position " << root->lexeme.col
+0039                << "\n";
+0040      exit(1);
+0041    }
+0042    [[noreturn]] void function_already_defined_error(AST *const root) {
+0043      std::cerr << "Error: Function in line " << root->lexeme.line_number
+0044                << " at position " << root->lexeme.col << " already defined\n";
+0045      exit(1);
+0046    }
+0047    [[noreturn]] void invalid_variable_declaration_error(AST *const root) {
+0048      std::cerr << "Invalid variable declaration in line "
+0049                << root->lexeme.line_number << " at position " << root->lexeme.col
+0050                << ": Variable already declared\n";
+0051      exit(1);
+0052    }
+0053    [[noreturn]] void invalid_if_stmt_predicate_error(AST *const root) {
+0054      std::cerr << "Invalid predicate in if statement in line "
+0055                << root->lexeme.line_number << " at position " << root->lexeme.col
+0056                << "\n";
+0057      exit(1);
+0058    }
+0059    [[noreturn]] void invalid_while_loop_predicate_error(AST *const root) {
+0060      std::cerr << "Invalid predicate in while loop in line "
+0061                << root->lexeme.line_number << " at position " << root->lexeme.col
+0062                << "\n";
+0063      exit(1);
+0064    }
+0065    [[noreturn]] void invalid_const_definition_error(AST *const root) {
+0066      std::cerr << "Invalid const definition in line " << root->lexeme.line_number
+0067                << " at position " << root->lexeme.col
+0068                << ": Const variable already defined\n";
+0069      exit(1);
+0070    }
+0071    [[noreturn]] void invalid_print_argument_error(AST *const root) {
+0072      std::cerr << "Invalid print argument error in line "
+0073                << root->lexeme.line_number << " at position " << root->lexeme.col
+0074                << "\n";
+0075      exit(1);
+0076    }
+0077    [[noreturn]] void variable_not_declared_error(AST *const root) {
+0078      std::cerr << "Variable not found error in line " << root->lexeme.line_number
+0079                << "at position " << root->lexeme.col << "\n";
+0080      exit(1);
+0081    }
+0082    [[noreturn]] void error(AST *const root) {
+0083      std::cerr << "Semantic error in line " << root->lexeme.line_number
+0084                << " at position " << root->lexeme.col << "\n";
+0085      exit(1);
+0086    }
+0087    [[noreturn]] void const_assign_error(AST *const root) {
+0088      std::cerr << "Invalid assignment error in line " << root->lexeme.line_number
+0089                << " at position " << root->lexeme.col
+0090                << ": Can't asssign to const variable\n";
+0091      exit(1);
+0092    }
+0093    [[noreturn]] void transpose_error(AST *const root) {
+0094      std::cerr << "Invalid transpose error in line " << root->lexeme.line_number
+0095                << " at position " << root->lexeme.col
+0096                << ": Object to be transposed must be a matrix\n";
+0097      exit(1);
+0098    }
+0099    [[noreturn]] void type_error(AST *const root) {
+0100      std::cerr << "Type mismatch error in line " << root->lexeme.line_number
+0101                << " at position " << root->lexeme.col << "\n";
+0102      exit(1);
+0103    }
+0104    [[noreturn]] void invalid_assignment_error(AST *const root) {
+0105      std::cerr << "Invalid assignment error in line " << root->lexeme.line_number
+0106                << " at position " << root->lexeme.col
+0107                << ": Value assigned to must be an l-value\n";
+0108      exit(1);
+0109    }
+0110    [[noreturn]] void index_error(AST *const root) {
+0111      std::cerr << "Index error in line " << root->lexeme.line_number
+0112                << " at position " << root->lexeme.col << "\n";
+0113      exit(1);
+0114    }
+0115    [[noreturn]] void invalid_index_error(AST *const root) {
+0116      std::cerr << "Invalid index error in line " << root->lexeme.line_number
+0117                << " at position " << root->lexeme.col << "\n";
+0118      exit(1);
+0119    }
+0120    [[noreturn]] void argument_count_mismatch_error(AST *const root) {
+0121      std::cerr << "Argument count mismatch error in line "
+0122                << root->lexeme.line_number << " at position " << root->lexeme.col
+0123                << "\n";
+0124      exit(1);
+0125    }
+0126    [[noreturn]] void argument_type_mismatch_error(AST *const root) {
+0127      std::cerr << "Argument type mismatch error in line "
+0128                << root->lexeme.line_number << " at position " << root->lexeme.col
+0129                << "\n";
+0130      exit(1);
+0131    }
+0132    [[noreturn]] void invalid_function_call_error(AST *const root) {
+0133      std::cerr << "Invalid function call in line " << root->lexeme.line_number
+0134                << " at position " << root->lexeme.col << "\n";
+0135      exit(1);
+0136    }
+0137    [[noreturn]] void undeclared_function_call_error(AST *const root) {
+0138      std::cerr << "Undeclared function call in line " << root->lexeme.line_number
+0139                << " at position " << root->lexeme.col << "\n";
+0140      exit(1);
+0141    }
+0142    [[noreturn]] void function_ret_type_error(AST *const root) {
+0143      std::cerr << "Function return type mismatch error in line "
+0144                << root->lexeme.line_number << " at position " << root->lexeme.col
+0145                << "\n";
+0146      exit(1);
+0147    }
+0148    [[noreturn]] void symbol_not_found_error(AST *const root) {
+0149      std::cerr << "Symbol not found in line " << root->lexeme.line_number
+0150                << " at position " << root->lexeme.col << "\n";
+0151      exit(1);
+0152    }
+0153    [[noreturn]] void invalid_tensor_declaration_error(AST *const root) {
+0154      std::cerr << "Invalid tensor declaration in line "
+0155                << root->lexeme.line_number << " at position " << root->lexeme.col
+0156                << "\n";
+0157      exit(1);
+0158    }
+0159    [[noreturn]] void control_paths_error(AST *const root) {
+0160      std::cerr << "Semantic error in line " << root->lexeme.line_number
+0161                << " at position " << root->lexeme.col
+0162                << ": Not all control paths return a value\n";
+0163      exit(1);
+0164    }
+0165    void visit_program(AST *const node);
+0166    void visit_decl(AST *const node);
+0167    void visit_var_decl(AST *const node);
+0168    static Type type_unify(const Type &type_left, const Type &type_right);
+0169    static Type base_type_node_unify(TypeNode left, TypeNode right);
+0170    static Type container_type_unify(const Type &left, const Type &right);
+0171    static Type super_type_unify(const Type &left, const Type &right);
+0172    static Type super_base_type_node_unify(TypeNode left, TypeNode right);
+0173    static Type super_container_type_unify(const Type &left, const Type &right);
+0174    void visit_id(AST *const node);
+0175    void visit_expr(AST *const node);
+0176    void visit_assign_expr(AST *const node);
+0177    void visit_range_expr(AST *const node);
+0178    void visit_logical_or_expr(AST *const node);
+0179    void visit_logical_and_expr(AST *const node);
+0180    void visit_bitwise_or_expr(AST *const node);
+0181    void visit_bitwise_xor_expr(AST *const node);
+0182    void visit_bitwise_and_expr(AST *const node);
+0183    void visit_equality_expr(AST *const node);
+0184    void visit_relational_expr(AST *const node);
+0185    void visit_additive_expr(AST *const node);
+0186    void visit_multiplicative_expr(AST *const node);
+0187    void visit_unary_expr(AST *const node);
+0188    void visit_postfix_expr(AST *const node);
+0189    void visit_primary_expr(AST *const node);
+0190    void visit_const_decl(AST *const node);
+0191    bool check_returns(AST *const node);
+0192    void visit_function_decl(AST *const node);
+0193    void visit_param(AST *const node);
+0194    void visit_block(AST *const node);
+0195    void visit_if_stmt(AST *const node);
+0196    void visit_while_stmt(AST *const node);
+0197    void visit_for_stmt(AST *const node);
+0198    void visit_return_stmt(AST *const node);
+0199    void visit_print_stmt(AST *const node);
+0200    void visit_expr_stmt(AST *const node);
+0201  };
+0202  inline void SemanticAnalyzer::visit_program(AST *const node) {
+0203    for (const auto &child : node->children) {
+0204      visit_decl(child.get());
+0205    }
+0206  }
+0207  inline void SemanticAnalyzer::visit_decl(AST *const node) {
+0208    switch (node->node) {
+0209    case Node::VAR_DECL:
+0210      visit_var_decl(node);
+0211      break;
+0212    case Node::CONST_DECL:
+0213      visit_const_decl(node);
+0214      break;
+0215    case Node::FUNCTION_DECL:
+0216      visit_function_decl(node);
+0217      break;
+0218    }
+0219  }
+0220  inline void SemanticAnalyzer::visit_var_decl(AST *const node) {
+0221    std::string id = std::get<std::string>(node->children[0]->v);
+0222    Type type;
+0223    if (node->children[1]->node == Node::TYPE) {
+0224      Type type_left = node->children[1]->type;
+0225      if (node->children.size() > 2) {
+0226        visit_expr(node->children[2].get());
+0227        Type type_right = node->children[2]->type;
+0228        type = type_unify(type_left, type_right);
+0229      } else {
+0230        type = type_left;
+0231      }
+0232    } else {
+0233      visit_expr(node->children[1].get());
+0234      type = node->children[1]->type;
+0235    }
+0236    if (type.is_null) {
+0237      type_error(node);
+0238    }
+0239    node->type = type;
+0240    SymbolInfo sym_info(type, false);
+0241    bool success = st->declare(id, sym_info);
+0242    if (!success) {
+0243      invalid_variable_declaration_error(node);
+0244    }
+0245  }
+0246  inline void SemanticAnalyzer::visit_id(AST *const node) {
+0247    SymbolInfo *sym_info = st->lookup(std::get<std::string>(node->v));
+0248    if (!sym_info) {
+0249      variable_not_declared_error(node);
+0250    }
+0251  }
+0252  inline void SemanticAnalyzer::visit_expr(AST *const node) {
+0253    visit_assign_expr(node);
+0254  }
+0255  inline void SemanticAnalyzer::visit_assign_expr(AST *const node) {
+0256    if (node->node == Node::ASSIGN) {
+0257      visit_range_expr(node->children[0].get());
+0258      auto left_node = node->children[0].get();
+0259      bool is_id = left_node->node == Node::ID;
+0260      bool is_index =
+0261          left_node->node == Node::POSTFIX_OP &&
+0262          std::get<PostfixOpNode>(left_node->v) == PostfixOpNode::INDEX;
+0263      if (!is_id && !is_index) {
+0264        invalid_assignment_error(node);
+0265      }
+0266      if (is_id) {
+0267        auto sym_info = st->lookup(std::get<std::string>(node->children[0]->v));
+0268        if (!sym_info) {
+0269          variable_not_declared_error(node);
+0270        }
+0271        if (sym_info->is_const) {
+0272          const_assign_error(node);
+0273        }
+0274      }
+0275      if (is_index) {
+0276        auto curr = node->children[0]->children[0].get();
+0277        if (curr->node != Node::ID) {
+0278          invalid_assignment_error(node);
+0279        }
+0280        std::string base_name = std::get<std::string>(curr->v);
+0281        auto base_sym_info = st->lookup(base_name);
+0282        if (!base_sym_info) {
+0283          variable_not_declared_error(node);
+0284        }
+0285        if (base_sym_info->is_const) {
+0286          const_assign_error(node);
+0287        }
+0288      }
+0289      visit_assign_expr(node->children[1].get());
+0290      Type type_left = node->children[0]->type;
+0291      Type type_right = node->children[1]->type;
+0292      Type type = type_unify(type_left, type_right);
+0293      if (type.is_null) {
+0294        type_error(node);
+0295      }
+0296      node->type = type;
+0297    } else {
+0298      visit_range_expr(node);
+0299    }
+0300  }
+0301  inline void SemanticAnalyzer::visit_range_expr(AST *const node) {
+0302    if (node->node == Node::RANGE) {
+0303      visit_expr(node->children[0].get());
+0304      if (node->children[0]->type.type_node != TypeNode::INT) {
+0305        type_error(node);
+0306      }
+0307      visit_expr(node->children[1].get());
+0308      if (node->children[1]->type.type_node != TypeNode::INT) {
+0309        type_error(node);
+0310      }
+0311      if (node->children.size() > 2) {
+0312        visit_expr(node->children[2].get());
+0313        if (node->children[2]->type.type_node != TypeNode::INT) {
+0314          type_error(node);
+0315        }
+0316      }
+0317      node->type = Type::from_type_node(TypeNode::VECTOR);
+0318      node->type.base_type = TypeNode::INT;
+0319      node->type.sizes = {static_cast<int64_t>(node->children.size())};
+0320    } else {
+0321      visit_logical_or_expr(node);
+0322    }
+0323  }
+0324  inline void SemanticAnalyzer::visit_logical_or_expr(AST *const node) {
+0325    if (auto p = std::get_if<LogicalOpNode>(&node->v);
+0326        p && *p == LogicalOpNode::OR) {
+0327      visit_logical_or_expr(node->children[0].get());
+0328      visit_logical_or_expr(node->children[1].get());
+0329      Type type_left = type_unify(Type::from_type_node(TypeNode::BOOL),
+0330                                  node->children[0]->type);
+0331      if (type_left.is_null) {
+0332        type_error(node);
+0333      }
+0334      Type type_right = type_unify(Type::from_type_node(TypeNode::BOOL),
+0335                                   node->children[1]->type);
+0336      if (type_right.is_null) {
+0337        type_error(node);
+0338      }
+0339      node->type = Type::from_type_node(TypeNode::BOOL);
+0340    } else {
+0341      visit_logical_and_expr(node);
+0342    }
+0343  }
+0344  inline void SemanticAnalyzer::visit_logical_and_expr(AST *const node) {
+0345    if (auto p = std::get_if<LogicalOpNode>(&node->v);
+0346        p && *p == LogicalOpNode::AND) {
+0347      visit_logical_and_expr(node->children[0].get());
+0348      visit_logical_and_expr(node->children[1].get());
+0349      Type type_left = type_unify(Type::from_type_node(TypeNode::BOOL),
+0350                                  node->children[0]->type);
+0351      if (type_left.is_null) {
+0352        type_error(node);
+0353      }
+0354      Type type_right = type_unify(Type::from_type_node(TypeNode::BOOL),
+0355                                   node->children[1]->type);
+0356      if (type_right.is_null) {
+0357        type_error(node);
+0358      }
+0359      node->type = Type::from_type_node(TypeNode::BOOL);
+0360    } else {
+0361      visit_bitwise_or_expr(node);
+0362    }
+0363  }
+0364  inline void SemanticAnalyzer::visit_bitwise_or_expr(AST *const node) {
+0365    if (auto p = std::get_if<BitwiseOpNode>(&node->v);
+0366        p && *p == BitwiseOpNode::BITWISE_OR) {
+0367      visit_bitwise_or_expr(node->children[0].get());
+0368      visit_bitwise_or_expr(node->children[1].get());
+0369      Type type_left = type_unify(Type::from_type_node(TypeNode::INT),
+0370                                  node->children[0]->type);
+0371      if (type_left.is_null) {
+0372        type_error(node);
+0373      }
+0374      Type type_right = type_unify(Type::from_type_node(TypeNode::INT),
+0375                                   node->children[1]->type);
+0376      if (type_right.is_null) {
+0377        type_error(node);
+0378      }
+0379      node->type = Type::from_type_node(TypeNode::INT);
+0380    } else {
+0381      visit_bitwise_xor_expr(node);
+0382    }
+0383  }
+0384  inline void SemanticAnalyzer::visit_bitwise_xor_expr(AST *const node) {
+0385    if (auto p = std::get_if<BitwiseOpNode>(&node->v);
+0386        p && *p == BitwiseOpNode::BITWISE_XOR) {
+0387      visit_bitwise_xor_expr(node->children[0].get());
+0388      visit_bitwise_xor_expr(node->children[1].get());
+0389      Type type_left = type_unify(Type::from_type_node(TypeNode::INT),
+0390                                  node->children[0]->type);
+0391      if (type_left.is_null) {
+0392        type_error(node);
+0393      }
+0394      Type type_right = type_unify(Type::from_type_node(TypeNode::INT),
+0395                                   node->children[1]->type);
+0396      if (type_right.is_null) {
+0397        type_error(node);
+0398      }
+0399      node->type = Type::from_type_node(TypeNode::INT);
+0400    } else {
+0401      visit_bitwise_and_expr(node);
+0402    }
+0403  }
+0404  inline void SemanticAnalyzer::visit_bitwise_and_expr(AST *const node) {
+0405    if (auto p = std::get_if<BitwiseOpNode>(&node->v);
+0406        p && *p == BitwiseOpNode::BITWISE_AND) {
+0407      visit_bitwise_and_expr(node->children[0].get());
+0408      visit_bitwise_and_expr(node->children[1].get());
+0409      Type type_left = type_unify(Type::from_type_node(TypeNode::INT),
+0410                                  node->children[0]->type);
+0411      if (type_left.is_null) {
+0412        type_error(node);
+0413      }
+0414      Type type_right = type_unify(Type::from_type_node(TypeNode::INT),
+0415                                   node->children[1]->type);
+0416      if (type_right.is_null) {
+0417        type_error(node);
+0418      }
+0419      node->type = Type::from_type_node(TypeNode::INT);
+0420    } else {
+0421      visit_equality_expr(node);
+0422    }
+0423  }
+0424  inline void SemanticAnalyzer::visit_equality_expr(AST *const node) {
+0425    if (std::holds_alternative<EqualityOpNode>(node->v)) {
+0426      visit_equality_expr(node->children[0].get());
+0427      visit_equality_expr(node->children[1].get());
+0428      Type type_left = node->children[0]->type;
+0429      Type type_right = node->children[1]->type;
+0430      if (type_unify(type_left, type_right).is_null) {
+0431        type_error(node);
+0432      }
+0433      node->type = Type::from_type_node(TypeNode::BOOL);
+0434    } else {
+0435      visit_relational_expr(node);
+0436    }
+0437  }
+0438  inline void SemanticAnalyzer::visit_relational_expr(AST *const node) {
+0439    if (std::holds_alternative<RelationalOpNode>(node->v)) {
+0440      visit_relational_expr(node->children[0].get());
+0441      visit_relational_expr(node->children[1].get());
+0442      Type type_left = node->children[0]->type;
+0443      Type type_right = node->children[1]->type;
+0444      Type type = type_unify(type_left, type_right);
+0445      if (type.is_null) {
+0446        type_error(node);
+0447      }
+0448      switch (type.type_node) {
+0449      case TypeNode::VECTOR:
+0450      case TypeNode::MATRIX:
+0451      case TypeNode::TENSOR:
+0452        type_error(node);
+0453      default:
+0454        break;
+0455      }
+0456      node->type = Type::from_type_node(TypeNode::BOOL);
+0457    } else {
+0458      visit_additive_expr(node);
+0459    }
+0460  }
+0461  inline void SemanticAnalyzer::visit_additive_expr(AST *const node) {
+0462    if (std::holds_alternative<AdditiveOpNode>(node->v)) {
+0463      visit_additive_expr(node->children[0].get());
+0464      visit_additive_expr(node->children[1].get());
+0465      Type left = node->children[0]->type;
+0466      Type right = node->children[1]->type;
+0467      Type type = super_type_unify(left, right);
+0468      if (type.is_null) {
+0469        type_error(node);
+0470      }
+0471      node->type = type;
+0472    } else {
+0473      visit_multiplicative_expr(node);
+0474    }
+0475  }
+0476  inline void SemanticAnalyzer::visit_multiplicative_expr(AST *const node) {
+0477    if (std::holds_alternative<MultiplicativeOpNode>(node->v)) {
+0478      visit_multiplicative_expr(node->children[0].get());
+0479      visit_multiplicative_expr(node->children[1].get());
+0480      Type left = node->children[0]->type;
+0481      Type right = node->children[1]->type;
+0482      if (std::get<MultiplicativeOpNode>(node->v) ==
+0483          MultiplicativeOpNode::MAT_MUL) {
+0484        if (left.type_node != TypeNode::MATRIX ||
+0485            right.type_node != TypeNode::MATRIX) {
+0486          type_error(node);
+0487        }
+0488        Type base = super_base_type_node_unify(left.base_type, right.base_type);
+0489        if (base.is_null) {
+0490          type_error(node);
+0491        }
+0492        if (left.sizes[1] != right.sizes[0]) {
+0493          mismatched_dimensions_error(node);
+0494        }
+0495        node->type = Type::from_type_node(TypeNode::MATRIX);
+0496        node->type.base_type = base.type_node;
+0497        node->type.sizes = {left.sizes[0], right.sizes[1]};
+0498      } else {
+0499        Type type = super_type_unify(left, right);
+0500        if (type.is_null) {
+0501          type_error(node);
+0502        }
+0503        node->type = type;
+0504      }
+0505    } else {
+0506      visit_unary_expr(node);
+0507    }
+0508  }
+0509  inline void SemanticAnalyzer::visit_unary_expr(AST *const node) {
+0510    if (std::holds_alternative<UnaryOpNode>(node->v)) {
+0511      visit_unary_expr(node->children[0].get());
+0512      switch (node->children[0]->type.type_node) {
+0513      case TypeNode::VECTOR:
+0514      case TypeNode::MATRIX:
+0515      case TypeNode::TENSOR:
+0516        type_error(node);
+0517      }
+0518      switch (std::get<UnaryOpNode>(node->v)) {
+0519      case UnaryOpNode::MINUS:
+0520      case UnaryOpNode::PLUS:
+0521        node->type = node->children[0]->type;
+0522        break;
+0523      case UnaryOpNode::NOT: {
+0524        Type type = node->children[0]->type;
+0525        type.type_node = TypeNode::BOOL;
+0526        node->type = type;
+0527        break;
+0528      }
+0529      default:
+0530        if (node->children[0]->type.type_node == TypeNode::FLOAT) {
+0531          type_error(node);
+0532        }
+0533        Type type = node->children[0]->type;
+0534        type.type_node = TypeNode::INT;
+0535        node->type = type;
+0536      }
+0537    } else {
+0538      visit_postfix_expr(node);
+0539    }
+0540  }
+0541  inline void SemanticAnalyzer::visit_postfix_expr(AST *const node) {
+0542    if (std::holds_alternative<PostfixOpNode>(node->v)) {
+0543      visit_postfix_expr(node->children[0].get());
+0544      switch (std::get<PostfixOpNode>(node->v)) {
+0545      case PostfixOpNode::INDEX:
+0546        switch (node->children[0]->type.type_node) {
+0547        case TypeNode::BOOL:
+0548        case TypeNode::INT:
+0549        case TypeNode::FLOAT:
+0550          type_error(node);
+0551        default:
+0552          if (node->children[0]->type.sizes.size() != node->children.size() - 1) {
+0553            index_error(node);
+0554          }
+0555          for (int i = 1; i < node->children.size(); i++) {
+0556            visit_expr(node->children[i].get());
+0557            if (node->children[i]->type.type_node != TypeNode::INT) {
+0558              invalid_index_error(node->children[i].get());
+0559            }
+0560          }
+0561          node->type = Type::from_type_node(node->children[0]->type.base_type);
+0562        }
+0563        break;
+0564      case PostfixOpNode::ARGUMENT:
+0565        if (std::holds_alternative<std::string>(node->children[0]->v)) {
+0566          std::string name = std::get<std::string>(node->children[0]->v);
+0567          if (!st->lookup(name) || !st->lookup(name)->is_function) {
+0568            undeclared_function_call_error(node);
+0569          }
+0570          if (st->lookup(name)->param_types.size() != node->children.size() - 1) {
+0571            argument_count_mismatch_error(node);
+0572          }
+0573          for (int i = 1; i < node->children.size(); i++) {
+0574            visit_expr(node->children[i].get());
+0575            if (type_unify(st->lookup(name)->param_types[i - 1],
+0576                           node->children[i]->type)
+0577                    .is_null) {
+0578              argument_type_mismatch_error(node);
+0579            }
+0580          }
+0581          node->type = st->lookup(name)->type;
+0582        } else {
+0583          invalid_function_call_error(node);
+0584        }
+0585        break;
+0586      case PostfixOpNode::DOT:
+0587        switch (node->children[0]->type.type_node) {
+0588        case TypeNode::BOOL:
+0589        case TypeNode::INT:
+0590        case TypeNode::FLOAT:
+0591          type_error(node);
+0592        default:
+0593          node->type = Type::from_type_node(TypeNode::VECTOR);
+0594          node->type.base_type = TypeNode::INT;
+0595          node->type.sizes = std::vector<int64_t>{
+0596              static_cast<int64_t>(node->children[0]->type.sizes.size())};
+0597        }
+0598        break;
+0599      case PostfixOpNode::TRANSPOSE:
+0600        switch (node->children[0]->type.type_node) {
+0601        case TypeNode::MATRIX:
+0602          node->type = node->children[0]->type;
+0603          node->type.sizes = std::vector<int64_t>{
+0604              node->children[0]->type.sizes[1], node->children[0]->type.sizes[0]};
+0605          break;
+0606        default:
+0607          transpose_error(node);
+0608        }
+0609        break;
+0610      default:
+0611        switch (node->children[0]->type.type_node) {
+0612        case TypeNode::MATRIX:
+0613          if (node->children[0]->type.sizes[0] !=
+0614              node->children[0]->type.sizes[1]) {
+0615            invalid_matrix_dimensions_error(node);
+0616          }
+0617          node->type = node->children[0]->type;
+0618          break;
+0619        default:
+0620          invalid_matrix_inverse_argument_error(node);
+0621        }
+0622      }
+0623    } else {
+0624      visit_primary_expr(node);
+0625    }
+0626  }
+0627  inline void SemanticAnalyzer::visit_primary_expr(AST *const node) {
+0628    switch (node->node) {
+0629    case Node::INT_LIT:
+0630      node->type = Type::from_type_node(TypeNode::INT);
+0631      break;
+0632    case Node::FLOAT_LIT:
+0633      node->type = Type::from_type_node(TypeNode::FLOAT);
+0634      break;
+0635    case Node::BOOL:
+0636      node->type = Type::from_type_node(TypeNode::BOOL);
+0637      break;
+0638    case Node::STRING_LIT:
+0639      node->type = Type::from_type_node(TypeNode::STRING);
+0640      break;
+0641    case Node::ID: {
+0642      auto ptr = st->lookup(std::get<std::string>(node->v));
+0643      if (ptr) {
+0644        node->type = ptr->type;
+0645      } else {
+0646        symbol_not_found_error(node);
+0647      }
+0648      break;
+0649    }
+0650    case Node::BINARY_OP:
+0651    case Node::UNARY_OP:
+0652    case Node::POSTFIX_OP:
+0653    case Node::FN_CALL:
+0654    case Node::RANGE:
+0655    case Node::ASSIGN:
+0656      visit_expr(node);
+0657      break;
+0658    case Node::TENSOR_INIT: {
+0659      Type target_type = node->children[0]->type;
+0660      visit_expr(node->children[1].get());
+0661      Type default_val_type = node->children[1]->type;
+0662      Type base_as_type = Type::from_type_node(target_type.base_type);
+0663      Type unified = type_unify(base_as_type, default_val_type);
+0664      if (unified.is_null) {
+0665        type_error(node);
+0666      }
+0667      node->type = target_type;
+0668      break;
+0669    }
+0670    default:
+0671      if (node->children.size() == 0) {
+0672        node->type = Type::from_type_node(TypeNode::VECTOR);
+0673        node->type.base_type = TypeNode::INT;
+0674        node->type.sizes = {0};
+0675        return;
+0676      }
+0677      visit_expr(node->children[0].get());
+0678      Type type = node->children[0]->type;
+0679      if (type.type_node == TypeNode::VECTOR && type.sizes[0] == 0) {
+0680        invalid_tensor_declaration_error(node);
+0681      }
+0682      for (int i = 1; i < node->children.size(); i++) {
+0683        visit_expr(node->children[i].get());
+0684        if (node->children[i]->type.type_node == TypeNode::VECTOR &&
+0685            node->children[i]->type.sizes[0] == 0) {
+0686          invalid_tensor_declaration_error(node);
+0687        }
+0688        type = super_type_unify(type, node->children[i]->type);
+0689        if (type.is_null) {
+0690          type_error(node);
+0691        }
+0692      }
+0693      Type new_type;
+0694      switch (type.type_node) {
+0695      case TypeNode::BOOL:
+0696      case TypeNode::INT:
+0697      case TypeNode::FLOAT:
+0698        new_type = Type::from_type_node(TypeNode::VECTOR);
+0699        new_type.base_type = type.type_node;
+0700        new_type.sizes =
+0701            std::vector<int64_t>{static_cast<int64_t>(node->children.size())};
+0702        node->type = new_type;
+0703        break;
+0704      default:
+0705        new_type = Type::from_type_node(TypeNode::TENSOR);
+0706        if (type.type_node == TypeNode::VECTOR) {
+0707          new_type = Type::from_type_node(TypeNode::MATRIX);
+0708        }
+0709        new_type.base_type = type.base_type;
+0710        std::vector<int64_t> new_sizes{
+0711            static_cast<int64_t>(node->children.size())};
+0712        for (auto size : type.sizes) {
+0713          new_sizes.push_back(size);
+0714        }
+0715        new_type.sizes = new_sizes;
+0716        node->type = new_type;
+0717      }
+0718      break;
+0719    }
+0720  }
+0721  inline void SemanticAnalyzer::visit_const_decl(AST *const node) {
+0722    std::string id = std::get<std::string>(node->children[0]->v);
+0723    Type type;
+0724    if (node->children[1]->node == Node::TYPE) {
+0725      Type type_left = node->children[1]->type;
+0726      visit_expr(node->children[2].get());
+0727      Type type_right = node->children[2]->type;
+0728      type = type_unify(type_left, type_right);
+0729    } else {
+0730      visit_expr(node->children[1].get());
+0731      type = node->children[1]->type;
+0732    }
+0733    if (type.is_null || type.type_node == TypeNode::VOID) {
+0734      type_error(node);
+0735    }
+0736    type.is_const = true;
+0737    node->type = type;
+0738    SymbolInfo sym_info(type, true);
+0739    bool success = st->declare(id, sym_info);
+0740    if (!success) {
+0741      invalid_const_definition_error(node);
+0742    }
+0743  }
+0744  inline bool SemanticAnalyzer::check_returns(AST *const node) {
+0745    if (!node) {
+0746      return false;
+0747    }
+0748    switch (node->node) {
+0749    case Node::RETURN_STMT:
+0750      return true;
+0751    case Node::BLOCK:
+0752      for (const auto &child : node->children) {
+0753        if (check_returns(child.get())) {
+0754          return true;
+0755        }
+0756      }
+0757      return false;
+0758    case Node::IF_STMT:
+0759      if (node->children.size() == 3) {
+0760        return check_returns(node->children[1].get()) &&
+0761               check_returns(node->children[2].get());
+0762      }
+0763      return false;
+0764    }
+0765    return false;
+0766  }
+0767  inline void SemanticAnalyzer::visit_param(AST *const node) {
+0768    node->type = node->children[1]->type;
+0769  }
+0770  inline void SemanticAnalyzer::visit_function_decl(AST *const node) {
+0771    std::string fn_name = std::get<std::string>(node->children[0]->v);
+0772    std::vector<Type> param_types;
+0773    Type ret_type = Type::from_type_node(TypeNode::VOID);
+0774    for (int i = 1; i < node->children.size() - 1; i++) {
+0775      if (node->children[i]->node == Node::PARAM) {
+0776        param_types.push_back(node->children[i]->children[1]->type);
+0777      } else {
+0778        ret_type = node->children[i]->type;
+0779      }
+0780    }
+0781    SymbolInfo sym_info(ret_type, param_types);
+0782    bool success = st->declare(fn_name, sym_info);
+0783    if (!success) {
+0784      function_already_defined_error(node);
+0785    }
+0786    st->enter_scope();
+0787    for (int i = 1; i < node->children.size() - 1; i++) {
+0788      if (node->children[i]->node == Node::PARAM) {
+0789        SymbolInfo param_sym_info(node->children[i]->children[1]->type,
+0790                                  node->children[i]->children[1]->type.is_const);
+0791        bool success =
+0792            st->declare(std::get<std::string>(node->children[i]->children[0]->v),
+0793                        param_sym_info);
+0794        if (!success) {
+0795          duplicate_parameter_name_error(node->children[i].get());
+0796        }
+0797      }
+0798    }
+0799    visit_block(node->children[node->children.size() - 1].get());
+0800    Type actual_ret_type = node->children[node->children.size() - 1]->ret_type;
+0801    Type t = type_unify(ret_type, actual_ret_type);
+0802    if (t.is_null) {
+0803      function_ret_type_error(node);
+0804    }
+0805    st->exit_scope();
+0806  }
+0807  inline void SemanticAnalyzer::visit_block(AST *const node) {
+0808    if (node->node == Node::RETURN_STMT) {
+0809      visit_return_stmt(node);
+0810      return;
+0811    }
+0812    bool definitely_returns = false;
+0813    Type ret_type = Type::from_type_node(TypeNode::VOID);
+0814    for (const auto &child : node->children) {
+0815      switch (child->node) {
+0816      case Node::CONST_DECL:
+0817        visit_const_decl(child.get());
+0818        break;
+0819      case Node::VAR_DECL:
+0820        visit_var_decl(child.get());
+0821        break;
+0822      case Node::IF_STMT:
+0823        visit_if_stmt(child.get());
+0824        break;
+0825      case Node::WHILE_STMT:
+0826        visit_while_stmt(child.get());
+0827        break;
+0828      case Node::FOR_STMT:
+0829        visit_for_stmt(child.get());
+0830        break;
+0831      case Node::RETURN_STMT:
+0832        visit_return_stmt(child.get());
+0833        break;
+0834      case Node::PRINT_STMT:
+0835        visit_print_stmt(child.get());
+0836        break;
+0837      case Node::EXPR_STMT:
+0838        visit_expr_stmt(child.get());
+0839        break;
+0840      default:
+0841        st->enter_scope();
+0842        visit_block(child.get());
+0843        st->exit_scope();
+0844      }
+0845      if (child->ret_type.is_null) {
+0846      } else if (ret_type.type_node == TypeNode::VOID) {
+0847        ret_type = child->ret_type;
+0848      } else if (child->ret_type.type_node != TypeNode::VOID) {
+0849        ret_type = super_type_unify(ret_type, child->ret_type);
+0850      }
+0851      if (ret_type.is_null) {
+0852        function_ret_type_error(node);
+0853      }
+0854      if (!definitely_returns && check_returns(child.get())) {
+0855        node->ret_type = ret_type;
+0856        definitely_returns = true;
+0857      }
+0858    }
+0859    if (!definitely_returns) {
+0860      if (ret_type.type_node != TypeNode::VOID) {
+0861        control_paths_error(node);
+0862      }
+0863      node->ret_type = ret_type;
+0864    }
+0865  }
+0866  inline void SemanticAnalyzer::visit_if_stmt(AST *const node) {
+0867    visit_expr(node->children[0].get());
+0868    Type type =
+0869        type_unify(Type::from_type_node(TypeNode::BOOL), node->children[0]->type);
+0870    if (type.is_null) {
+0871      invalid_if_stmt_predicate_error(node->children[0].get());
+0872    }
+0873    node->children[0]->type = type;
+0874    st->enter_scope();
+0875    visit_block(node->children[1].get());
+0876    st->exit_scope();
+0877    Type ret_type = node->children[1]->ret_type;
+0878    if (node->children.size() == 3) {
+0879      st->enter_scope();
+0880      visit_block(node->children[2].get());
+0881      st->exit_scope();
+0882      Type else_ret_type = node->children[2]->ret_type;
+0883      if (ret_type.type_node == TypeNode::VOID) {
+0884        ret_type = else_ret_type;
+0885      } else if (else_ret_type.type_node != TypeNode::VOID) {
+0886        ret_type = super_type_unify(ret_type, else_ret_type);
+0887      }
+0888      if (ret_type.is_null) {
+0889        function_ret_type_error(node);
+0890      }
+0891    }
+0892    node->ret_type = ret_type;
+0893  }
+0894  inline void SemanticAnalyzer::visit_while_stmt(AST *const node) {
+0895    visit_expr(node->children[0].get());
+0896    Type type =
+0897        type_unify(Type::from_type_node(TypeNode::BOOL), node->children[0]->type);
+0898    if (type.is_null) {
+0899      invalid_while_loop_predicate_error(node);
+0900    }
+0901    node->children[0]->type = type;
+0902    st->enter_scope();
+0903    visit_block(node->children[1].get());
+0904    st->exit_scope();
+0905    node->ret_type = node->children[1]->type;
+0906  }
+0907  inline void SemanticAnalyzer::visit_for_stmt(AST *const node) {
+0908    st->enter_scope();
+0909    auto var_name = std::get<std::string>(node->children[0]->v);
+0910    visit_expr(node->children[1].get());
+0911    if (node->children[1]->type.type_node != TypeNode::VECTOR) {
+0912      invalid_range_expr(node->children[1].get());
+0913    }
+0914    auto var_type = Type::from_type_node(node->children[1]->type.base_type);
+0915    SymbolInfo sym_info(var_type, false);
+0916    st->declare(var_name, sym_info);
+0917    visit_block(node->children[2].get());
+0918    st->exit_scope();
+0919    node->ret_type = node->children[2]->type;
+0920  }
+0921  inline void SemanticAnalyzer::visit_return_stmt(AST *const node) {
+0922    if (node->children.size() == 1) {
+0923      visit_expr(node->children[0].get());
+0924      node->type = node->children[0]->type;
+0925    } else {
+0926      node->type = Type::from_type_node(TypeNode::VOID);
+0927    }
+0928    node->ret_type = node->type;
+0929  }
+0930  inline void SemanticAnalyzer::visit_print_stmt(AST *const node) {
+0931    if (node->children[0]->node == Node::STRING_LIT) {
+0932      node->children[0]->type = Type::from_type_node(TypeNode::STRING);
+0933      return;
+0934    }
+0935    visit_expr(node->children[0].get());
+0936    if (node->children[0]->type.type_node == TypeNode::VOID) {
+0937      invalid_print_argument_error(node);
+0938    }
+0939  }
+0940  inline void SemanticAnalyzer::visit_expr_stmt(AST *const node) {
+0941    visit_expr(node->children[0].get());
+0942  }
+0943  inline Type SemanticAnalyzer::type_unify(const Type &type_left,
+0944                                           const Type &type_right) {
+0945    switch (type_left.type_node) {
+0946    case TypeNode::INT:
+0947    case TypeNode::FLOAT:
+0948    case TypeNode::BOOL:
+0949    case TypeNode::VOID:
+0950      return base_type_node_unify(type_left.type_node, type_right.type_node);
+0951    case TypeNode::VECTOR:
+0952    case TypeNode::MATRIX:
+0953    case TypeNode::TENSOR:
+0954      return container_type_unify(type_left, type_right);
+0955    default:
+0956      return Type::error();
+0957    }
+0958  }
+0959  inline Type SemanticAnalyzer::base_type_node_unify(TypeNode left,
+0960                                                     TypeNode right) {
+0961    if (left == TypeNode::VOID && right == TypeNode::VOID) {
+0962      return Type::from_type_node(TypeNode::VOID);
+0963    }
+0964    if (left == TypeNode::VOID || right == TypeNode::VOID) {
+0965      return Type::error();
+0966    }
+0967    switch (left) {
+0968    case TypeNode::INT:
+0969    case TypeNode::FLOAT:
+0970    case TypeNode::BOOL:
+0971      switch (right) {
+0972      case TypeNode::INT:
+0973      case TypeNode::FLOAT:
+0974      case TypeNode::BOOL:
+0975        return Type::from_type_node(left);
+0976      default:
+0977        return Type::error();
+0978      }
+0979    default:
+0980      return Type::error();
+0981    }
+0982  }
+0983  inline Type SemanticAnalyzer::container_type_unify(const Type &left,
+0984                                                     const Type &right) {
+0985    switch (right.type_node) {
+0986    case TypeNode::INT:
+0987    case TypeNode::BOOL:
+0988    case TypeNode::FLOAT:
+0989    case TypeNode::VOID:
+0990      return Type::error();
+0991    default:
+0992      if (left.sizes != right.sizes || left.is_const != right.is_const) {
+0993        return Type::error();
+0994      }
+0995      Type base_type = base_type_node_unify(left.base_type, right.base_type);
+0996      if (base_type.is_null) {
+0997        return Type::error();
+0998      }
+0999      Type t = Type::from_type_node(left.type_node);
+1000      t.base_type = base_type.type_node;
+1001      t.sizes = left.sizes;
+1002      t.is_const = left.is_const;
+1003      return t;
+1004    }
+1005  }
+1006  inline Type SemanticAnalyzer::super_base_type_node_unify(TypeNode left,
+1007                                                           TypeNode right) {
+1008    if (left == TypeNode::VOID && right == TypeNode::VOID) {
+1009      return Type::from_type_node(TypeNode::VOID);
+1010    }
+1011    if (left == TypeNode::VOID || right == TypeNode::VOID) {
+1012      return Type::error();
+1013    }
+1014    switch (left) {
+1015    case TypeNode::BOOL:
+1016      return Type::from_type_node(right);
+1017    case TypeNode::INT:
+1018      switch (right) {
+1019      case TypeNode::FLOAT:
+1020        return Type::from_type_node(right);
+1021      default:
+1022        return Type::from_type_node(left);
+1023      }
+1024    case TypeNode::FLOAT:
+1025      return Type::from_type_node(left);
+1026    default:
+1027      return Type::error();
+1028    }
+1029  }
+1030  inline Type
+1031  SemanticAnalyzer::super_container_type_unify(const Type &type_left,
+1032                                               const Type &type_right) {
+1033    switch (type_right.type_node) {
+1034    case TypeNode::BOOL:
+1035    case TypeNode::INT:
+1036    case TypeNode::FLOAT:
+1037    case TypeNode::VOID:
+1038      return Type::error();
+1039    }
+1040    switch (type_left.type_node) {
+1041    case TypeNode::BOOL:
+1042    case TypeNode::INT:
+1043    case TypeNode::FLOAT:
+1044    case TypeNode::VOID:
+1045      return Type::error();
+1046    }
+1047    if (type_left.sizes != type_right.sizes || type_left.is_const != type_right.is_const) {
+1048      return Type::error();
+1049    }
+1050    Type base_type =
+1051        super_base_type_node_unify(type_left.base_type, type_right.base_type);
+1052    if (base_type.is_null) {
+1053      return Type::error();
+1054    }
+1055    Type t;
+1056    if (type_left.type_node == TypeNode::TENSOR ||
+1057        type_right.type_node == TypeNode::TENSOR) {
+1058      t = Type::from_type_node(TypeNode::TENSOR);
+1059    } else {
+1060      t = Type::from_type_node(type_left.type_node);
+1061    }
+1062    t.base_type = base_type.type_node;
+1063    t.sizes = type_left.sizes;
+1064    t.is_const = type_left.is_const;
+1065    return t;
+1066  }
+1067  inline Type SemanticAnalyzer::super_type_unify(const Type &left,
+1068                                                 const Type &right) {
+1069    switch (left.type_node) {
+1070    case TypeNode::BOOL:
+1071    case TypeNode::INT:
+1072    case TypeNode::FLOAT:
+1073    case TypeNode::VOID:
+1074      switch (right.type_node) {
+1075      case TypeNode::BOOL:
+1076      case TypeNode::INT:
+1077      case TypeNode::FLOAT:
+1078      case TypeNode::VOID:
+1079        return super_base_type_node_unify(left.type_node, right.type_node);
+1080      default:
+1081        return Type::error();
+1082      }
+1083    default:
+1084      return super_container_type_unify(left, right);
+1085    }
+1086  }
+
+
++-----------------------------------------------------------------------------+
+| include/semantic_analyzer/symbol_table.hpp                                   |
++-----------------------------------------------------------------------------+
+
+0001  #pragma once
+0002  #include "parser/type.hpp"
+0003  #include <iostream>
+0004  #include <string>
+0005  #include <unordered_map>
+0006  #include <vector>
+0007  namespace llvm {
+0008  class Value;
+0009  }
+0010  struct SymbolInfo {
+0011    Type type;
+0012    bool is_const;
+0013    bool is_function;
+0014    std::vector<Type> param_types;
+0015    llvm::Value *llvm_value;
+0016    SymbolInfo()
+0017        : type(Type::from_type_node(TypeNode::INT)), is_const(false),
+0018          is_function(false), llvm_value(nullptr) {}
+0019    SymbolInfo(Type t, bool is_const)
+0020        : type(t), is_const(is_const), is_function(false), llvm_value(nullptr) {}
+0021    SymbolInfo(Type ret_type, std::vector<Type> param_types)
+0022        : type(ret_type), is_const(false), is_function(true),
+0023          param_types(param_types), llvm_value(nullptr) {}
+0024  };
+0025  struct SymbolTable {
+0026    std::vector<std::unordered_map<std::string, SymbolInfo>> scopes;
+0027    SymbolTable() { enter_scope(); }
+0028    void enter_scope();
+0029    void exit_scope();
+0030    bool declare(const std::string &name, SymbolInfo info);
+0031    SymbolInfo *lookup(const std::string &name);
+0032  };
+0033  inline void SymbolTable::enter_scope() { scopes.emplace_back(); }
+0034  inline void SymbolTable::exit_scope() {
+0035    if (scopes.size() <= 1) {
+0036      std::cerr << "Compiler Bug: Scope Underflow\n";
+0037      std::exit(1);
+0038    }
+0039    scopes.pop_back();
+0040  }
+0041  inline bool SymbolTable::declare(const std::string &name, SymbolInfo info) {
+0042    auto &current_scope = scopes.back();
+0043    if (current_scope.find(name) != current_scope.end()) {
+0044      return false;
+0045    }
+0046    current_scope[name] = info;
+0047    return true;
+0048  }
+0049  inline SymbolInfo *SymbolTable::lookup(const std::string &name) {
+0050    for (auto it = scopes.rbegin(); it != scopes.rend(); it++) {
+0051      auto found = it->find(name);
+0052      if (found != it->end()) {
+0053        return &found->second;
+0054      }
+0055    }
+0056    return nullptr;
+0057  }
+
+
++-----------------------------------------------------------------------------+
+| src/backend/codegen.cpp                                                      |
++-----------------------------------------------------------------------------+
+
+0001  #include "backend/codegen.hpp"
+0002  #include "parser/ast.hpp"
+0003  #include <iostream>
+0004  #include <llvm/IR/LegacyPassManager.h>
+0005  #include <llvm/IR/Verifier.h>
+0006  #include <llvm/MC/TargetRegistry.h>
+0007  #include <llvm/Passes/PassBuilder.h>
+0008  #include <llvm/Support/FileSystem.h>
+0009  #include <llvm/Support/TargetSelect.h>
+0010  #include <llvm/Target/TargetMachine.h>
+0011  #include <llvm/Target/TargetOptions.h>
+0012  #include <llvm/TargetParser/Host.h>
+0013  #include <llvm/TargetParser/Triple.h>
+0014  CodeGen::CodeGen() {
+0015    context = std::make_unique<llvm::LLVMContext>();
+0016    builder = std::make_unique<llvm::IRBuilder<>>(*context);
+0017    module = std::make_unique<llvm::Module>("zorn_module", *context);
+0018    llvm::InitializeNativeTarget();
+0019    llvm::InitializeNativeTargetAsmPrinter();
+0020    llvm::InitializeNativeTargetAsmParser();
+0021  }
+0022  
+0023  llvm::Value *CodeGen::allocate_tensor_on_stack(const Type &type, const std::string &name) {
+0024      llvm::StructType *tensor_struct_type = llvm::StructType::getTypeByName(*context, "ZornTensor");
+0025      if (!tensor_struct_type) {
+0026          tensor_struct_type = llvm::StructType::create(*context, {llvm::Type::getInt64Ty(*context), llvm::PointerType::getUnqual(*context), llvm::PointerType::getUnqual(*context)}, "ZornTensor");
+0027      }
+0028      
+0029      llvm::AllocaInst *tensor = create_entry_block_alloca(current_function, name, tensor_struct_type);
+0030      
+0031      int64_t ndim = type.sizes.size();
+0032      llvm::AllocaInst *sizes_array = builder->CreateAlloca(llvm::Type::getInt64Ty(*context), llvm::ConstantInt::get(*context, llvm::APInt(64, ndim, true)), name + "_sizes");
+0033      for (size_t i = 0; i < (size_t)ndim; i++) {
+0034          llvm::Value *idx = llvm::ConstantInt::get(*context, llvm::APInt(64, i, true));
+0035          llvm::Value *ptr = builder->CreateGEP(llvm::Type::getInt64Ty(*context), sizes_array, {idx});
+0036          builder->CreateStore(llvm::ConstantInt::get(*context, llvm::APInt(64, type.sizes[i], true)), ptr);
+0037      }
+0038      
+0039      int64_t total_size = 1;
+0040      for (int64_t s : type.sizes) total_size *= s;
+0041      if (total_size == 0) total_size = 1;
+0042      llvm::AllocaInst *data_array = builder->CreateAlloca(llvm::Type::getDoubleTy(*context), llvm::ConstantInt::get(*context, llvm::APInt(64, total_size, true)), name + "_data");
+0043      
+0044      llvm::Value *ndim_ptr = builder->CreateStructGEP(tensor_struct_type, tensor, 0);
+0045      builder->CreateStore(llvm::ConstantInt::get(*context, llvm::APInt(64, ndim, true)), ndim_ptr);
+0046      
+0047      llvm::Value *sizes_ptr = builder->CreateStructGEP(tensor_struct_type, tensor, 1);
+0048      builder->CreateStore(sizes_array, sizes_ptr);
+0049      
+0050      llvm::Value *data_ptr = builder->CreateStructGEP(tensor_struct_type, tensor, 2);
+0051      builder->CreateStore(data_array, data_ptr);
+0052      
+0053      return tensor;
+0054  }
+0055  
+0056  llvm::Type *CodeGen::get_llvm_type(const Type &type) {
+0057    switch (type.type_node) {
+0058    case TypeNode::INT:
+0059      return llvm::Type::getInt64Ty(*context);
+0060    case TypeNode::FLOAT:
+0061      return llvm::Type::getDoubleTy(*context);
+0062    case TypeNode::BOOL:
+0063      return llvm::Type::getInt1Ty(*context);
+0064    case TypeNode::VOID:
+0065      return llvm::Type::getVoidTy(*context);
+0066    default:
+0067      return llvm::PointerType::getUnqual(
+0068          *context);
+0069    }
+0070  }
+0071  llvm::AllocaInst *CodeGen::create_entry_block_alloca(
+0072      llvm::Function *function, const std::string &var_name, llvm::Type *type) {
+0073    llvm::IRBuilder<> tmp_builder(&function->getEntryBlock(),
+0074                                  function->getEntryBlock().begin());
+0075    return tmp_builder.CreateAlloca(type, nullptr, var_name);
+0076  }
+0077  void CodeGen::generate(AST *root) { visit_program(root); }
+0078  void CodeGen::optimize() {
+0079    llvm::LoopAnalysisManager LAM;
+0080    llvm::FunctionAnalysisManager FAM;
+0081    llvm::CGSCCAnalysisManager CGAM;
+0082    llvm::ModuleAnalysisManager MAM;
+0083    llvm::PassBuilder PB;
+0084    PB.registerModuleAnalyses(MAM);
+0085    PB.registerCGSCCAnalyses(CGAM);
+0086    PB.registerFunctionAnalyses(FAM);
+0087    PB.registerLoopAnalyses(LAM);
+0088    PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+0089    llvm::ModulePassManager MPM =
+0090        PB.buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O3);
+0091    MPM.run(*module, MAM);
+0092  }
+0093  void CodeGen::emit_object_code(const std::string &filename) {
+0094    auto TargetTripleStr = llvm::sys::getDefaultTargetTriple();
+0095    llvm::Triple TargetTriple(TargetTripleStr);
+0096    module->setTargetTriple(TargetTriple);
+0097    std::string Error;
+0098    auto Target = llvm::TargetRegistry::lookupTarget(TargetTriple, Error);
+0099    if (!Target) {
+0100      std::cerr << Error;
+0101      return;
+0102    }
+0103    auto CPU = "generic";
+0104    auto Features = "";
+0105    llvm::TargetOptions opt;
+0106    auto RM = std::optional<llvm::Reloc::Model>();
+0107    auto TargetMachine =
+0108        Target->createTargetMachine(TargetTriple, CPU, Features, opt, RM);
+0109    module->setDataLayout(TargetMachine->createDataLayout());
+0110    std::error_code EC;
+0111    llvm::raw_fd_ostream dest(filename, EC, llvm::sys::fs::OF_None);
+0112    if (EC) {
+0113      std::cerr << "Could not open file: " << EC.message() << "\n";
+0114      return;
+0115    }
+0116    llvm::legacy::PassManager pass;
+0117    auto FileType = llvm::CodeGenFileType::ObjectFile;
+0118    if (TargetMachine->addPassesToEmitFile(pass, dest, nullptr, FileType)) {
+0119      std::cerr << "TargetMachine can't emit a file of this type\n";
+0120      return;
+0121    }
+0122    pass.run(*module);
+0123    dest.flush();
+0124  }
+0125  void CodeGen::dump_ir() { module->print(llvm::errs(), nullptr); }
+0126  llvm::Value *CodeGen::visit(AST *node) {
+0127    if (!node)
+0128      return nullptr;
+0129    switch (node->node) {
+0130    case Node::PROGRAM:
+0131      return visit_program(node);
+0132    case Node::VAR_DECL:
+0133      return visit_var_decl(node);
+0134    case Node::CONST_DECL:
+0135      return visit_const_decl(node);
+0136    case Node::FUNCTION_DECL:
+0137      return visit_function_decl(node);
+0138    case Node::BLOCK:
+0139      return visit_block(node);
+0140    case Node::IF_STMT:
+0141      return visit_if_stmt(node);
+0142    case Node::WHILE_STMT:
+0143      return visit_while_stmt(node);
+0144    case Node::RETURN_STMT:
+0145      return visit_return_stmt(node);
+0146    case Node::EXPR_STMT:
+0147      return visit_expr_stmt(node);
+0148    case Node::ASSIGN:
+0149      return visit_assign_expr(node);
+0150    case Node::ID:
+0151    case Node::INT_LIT:
+0152    case Node::FLOAT_LIT:
+0153    case Node::BOOL:
+0154    case Node::TENSOR_INIT:
+0155    case Node::TENSOR_LIT:
+0156    case Node::STRING_LIT:
+0157      return visit_primary_expr(node);
+0158    case Node::BINARY_OP:
+0159      return visit_binary_expr(node);
+0160    case Node::POSTFIX_OP:
+0161      return visit_postfix_expr(node);
+0162    case Node::UNARY_OP:
+0163      return visit_unary_expr(node);
+0164    case Node::PRINT_STMT:
+0165      return visit_print_stmt(node);
+0166    case Node::FOR_STMT:
+0167      return visit_for_stmt(node);
+0168    case Node::FN_CALL:
+0169      return visit_postfix_expr(node);
+0170    case Node::VAR_DEF:
+0171      return visit_var_decl(node);
+0172    default:
+0173      return nullptr;
+0174    }
+0175  }
+0176  llvm::Value *CodeGen::visit_program(AST *node) {
+0177    llvm::FunctionType *initFT = llvm::FunctionType::get(llvm::Type::getVoidTy(*context), false);
+0178    llvm::Function *initF = llvm::Function::Create(initFT, llvm::Function::InternalLinkage, "__zorn_global_init", module.get());
+0179    llvm::BasicBlock *initBB = llvm::BasicBlock::Create(*context, "entry", initF);
+0180    global_init_func = initF;
+0181    for (const auto &child : node->children) {
+0182      visit(child.get());
+0183    }
+0184    builder->SetInsertPoint(initBB);
+0185    for (auto &inst : global_init_instructions) {
+0186      inst();
+0187    }
+0188    builder->CreateRetVoid();
+0189    global_init_func = nullptr;
+0190    llvm::Type *i32Ty = llvm::Type::getInt32Ty(*context);
+0191    llvm::StructType *ctorTy = llvm::StructType::get(i32Ty, llvm::PointerType::get(*context, 0), llvm::PointerType::getUnqual(*context));
+0192    llvm::Constant *ctorEntry = llvm::ConstantStruct::get(ctorTy, {
+0193      llvm::ConstantInt::get(i32Ty, 65535),
+0194      initF,
+0195      llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(*context))
+0196    });
+0197    llvm::ArrayType *ctorArrTy = llvm::ArrayType::get(ctorTy, 1);
+0198    new llvm::GlobalVariable(*module, ctorArrTy, false, llvm::GlobalValue::AppendingLinkage,
+0199        llvm::ConstantArray::get(ctorArrTy, {ctorEntry}), "llvm.global_ctors");
+0200    return nullptr;
+0201  }
+0202  llvm::Value *CodeGen::visit_decl(AST *node) { return visit(node); }
+0203  llvm::Value *CodeGen::visit_var_decl(AST *node) {
+0204    std::string id = std::get<std::string>(node->children[0]->v);
+0205    if (!current_function) {
+0206      llvm::Type *type = get_llvm_type(node->type);
+0207      llvm::Constant *init = nullptr;
+0208      if (type->isIntegerTy(64)) {
+0209        init = llvm::ConstantInt::get(type, 0);
+0210      } else if (type->isDoubleTy()) {
+0211        init = llvm::ConstantFP::get(type, 0.0);
+0212      } else if (type->isIntegerTy(1)) {
+0213        init = llvm::ConstantInt::get(type, 0);
+0214      } else {
+0215        init = llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(type));
+0216      }
+0217      auto *gv = new llvm::GlobalVariable(*module, type, false,
+0218          llvm::GlobalValue::InternalLinkage, init, id);
+0219      SymbolInfo sym_info(node->type, false);
+0220      sym_info.llvm_value = gv;
+0221      st.declare(id, sym_info);
+0222      bool has_init = node->children.size() > 2 || (node->children.size() > 1 && node->children[1]->node != Node::TYPE);
+0223      if (has_init) {
+0224        AST *init_expr = node->children.size() > 2 ? node->children[2].get() : node->children[1].get();
+0225        global_init_instructions.push_back([this, init_expr, gv]() {
+0226          llvm::Function *saved = current_function;
+0227          current_function = global_init_func;
+0228          llvm::Value *val = visit(init_expr);
+0229          builder->CreateStore(val, gv);
+0230          current_function = saved;
+0231        });
+0232      }
+0233      return gv;
+0234    }
+0235    llvm::Value *init_val = nullptr;
+0236    if (node->children.size() > 2) {
+0237      init_val = visit(node->children[2].get());
+0238    } else if (node->children[1]->node != Node::TYPE) {
+0239      init_val = visit(node->children[1].get());
+0240    }
+0241    llvm::Type *type = get_llvm_type(node->type);
+0242    llvm::AllocaInst *alloca = create_entry_block_alloca(current_function, id, type);
+0243    if (init_val) {
+0244      builder->CreateStore(init_val, alloca);
+0245    }
+0246    SymbolInfo sym_info(node->type, false);
+0247    sym_info.llvm_value = alloca;
+0248    st.declare(id, sym_info);
+0249    return alloca;
+0250  }
+0251  llvm::Value *CodeGen::visit_const_decl(AST *node) {
+0252    std::string id = std::get<std::string>(node->children[0]->v);
+0253    if (!current_function) {
+0254      llvm::Type *type = get_llvm_type(node->type);
+0255      llvm::Constant *init = nullptr;
+0256      if (type->isIntegerTy(64)) {
+0257        init = llvm::ConstantInt::get(type, 0);
+0258      } else if (type->isDoubleTy()) {
+0259        init = llvm::ConstantFP::get(type, 0.0);
+0260      } else if (type->isIntegerTy(1)) {
+0261        init = llvm::ConstantInt::get(type, 0);
+0262      } else {
+0263        init = llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(type));
+0264      }
+0265      auto *gv = new llvm::GlobalVariable(*module, type, false,
+0266          llvm::GlobalValue::InternalLinkage, init, id);
+0267      SymbolInfo sym_info(node->type, true);
+0268      sym_info.llvm_value = gv;
+0269      st.declare(id, sym_info);
+0270      AST *init_expr = node->children[1]->node == Node::TYPE ? node->children[2].get() : node->children[1].get();
+0271      global_init_instructions.push_back([this, init_expr, gv]() {
+0272        llvm::Function *saved = current_function;
+0273        current_function = global_init_func;
+0274        llvm::Value *val = visit(init_expr);
+0275        builder->CreateStore(val, gv);
+0276        current_function = saved;
+0277      });
+0278      return gv;
+0279    }
+0280    llvm::Value *init_val =
+0281        visit(node->children[1]->node == Node::TYPE ? node->children[2].get()
+0282                                                    : node->children[1].get());
+0283    llvm::Type *type = get_llvm_type(node->type);
+0284    llvm::AllocaInst *alloca = create_entry_block_alloca(current_function, id, type);
+0285    builder->CreateStore(init_val, alloca);
+0286    SymbolInfo sym_info(node->type, true);
+0287    sym_info.llvm_value = alloca;
+0288    st.declare(id, sym_info);
+0289    return alloca;
+0290  }
+0291  llvm::Value *CodeGen::visit_function_decl(AST *node) {
+0292    std::string fn_name = std::get<std::string>(node->children[0]->v);
+0293    std::vector<llvm::Type *> param_types;
+0294    std::vector<std::string> param_names;
+0295    Type ret_type = Type::from_type_node(TypeNode::VOID);
+0296    for (int i = 1; i < node->children.size() - 1; i++) {
+0297      if (node->children[i]->node == Node::PARAM) {
+0298        param_types.push_back(
+0299            get_llvm_type(node->children[i]->children[1]->type));
+0300        param_names.push_back(
+0301            std::get<std::string>(node->children[i]->children[0]->v));
+0302      } else {
+0303        ret_type = node->children[i]->type;
+0304      }
+0305    }
+0306    
+0307    bool is_tensor_ret = (ret_type.type_node == TypeNode::VECTOR || ret_type.type_node == TypeNode::MATRIX || ret_type.type_node == TypeNode::TENSOR);
+0308    if (is_tensor_ret) {
+0309        param_types.insert(param_types.begin(), llvm::PointerType::getUnqual(*context));
+0310    }
+0311    
+0312    llvm::Type *llvm_ret_type = get_llvm_type(ret_type);
+0313    llvm::FunctionType *FT =
+0314        llvm::FunctionType::get(is_tensor_ret ? llvm::Type::getVoidTy(*context) : llvm_ret_type, param_types, false);
+0315    llvm::Function *F = llvm::Function::Create(
+0316        FT, llvm::Function::ExternalLinkage, fn_name, module.get());
+0317        
+0318    unsigned idx = 0;
+0319    for (auto &arg : F->args()) {
+0320      if (is_tensor_ret && idx == 0) {
+0321          arg.setName("out_ret");
+0322      } else {
+0323          arg.setName(param_names[is_tensor_ret ? idx - 1 : idx]);
+0324      }
+0325      idx++;
+0326    }
+0327    
+0328    SymbolInfo sym_info(ret_type, std::vector<Type>());
+0329    sym_info.is_function = true;
+0330    sym_info.llvm_value = F;
+0331    st.declare(fn_name, sym_info);
+0332    llvm::BasicBlock *BB = llvm::BasicBlock::Create(*context, "entry", F);
+0333    builder->SetInsertPoint(BB);
+0334    current_function = F;
+0335    st.enter_scope();
+0336    
+0337    idx = 0;
+0338    for (auto &arg : F->args()) {
+0339      if (is_tensor_ret && idx == 0) {
+0340          idx++;
+0341          continue;
+0342      }
+0343      int param_idx = is_tensor_ret ? idx - 1 : idx;
+0344      llvm::AllocaInst *alloca =
+0345          create_entry_block_alloca(F, param_names[param_idx], arg.getType());
+0346      builder->CreateStore(&arg, alloca);
+0347      SymbolInfo param_info(node->children[param_idx + 1]->children[1]->type, false);
+0348      param_info.llvm_value = alloca;
+0349      st.declare(param_names[param_idx], param_info);
+0350      idx++;
+0351    }
+0352    visit_block(node->children.back().get());
+0353    st.exit_scope();
+0354    if (ret_type.type_node == TypeNode::VOID &&
+0355        !builder->GetInsertBlock()->getTerminator()) {
+0356      builder->CreateRetVoid();
+0357    }
+0358    llvm::verifyFunction(*F);
+0359    current_function = nullptr;
+0360    return F;
+0361  }
+0362  llvm::Value *CodeGen::visit_block(AST *node) {
+0363    for (const auto &child : node->children) {
+0364      if (child->node == Node::BLOCK) {
+0365        st.enter_scope();
+0366        visit(child.get());
+0367        st.exit_scope();
+0368      } else {
+0369        visit(child.get());
+0370      }
+0371    }
+0372    return nullptr;
+0373  }
+0374  llvm::Value *CodeGen::visit_if_stmt(AST *node) {
+0375    llvm::Value *cond = visit(node->children[0].get());
+0376    if (!cond) return nullptr;
+0377    llvm::Function *the_function = builder->GetInsertBlock()->getParent();
+0378    llvm::BasicBlock *then_bb =
+0379        llvm::BasicBlock::Create(*context, "then", the_function);
+0380    llvm::BasicBlock *else_bb = llvm::BasicBlock::Create(*context, "else");
+0381    llvm::BasicBlock *merge_bb = llvm::BasicBlock::Create(*context, "ifcont");
+0382    bool has_else = node->children.size() > 2;
+0383    builder->CreateCondBr(cond, then_bb, has_else ? else_bb : merge_bb);
+0384    builder->SetInsertPoint(then_bb);
+0385    st.enter_scope();
+0386    visit(node->children[1].get());
+0387    st.exit_scope();
+0388    if (!builder->GetInsertBlock()->getTerminator()) {
+0389      builder->CreateBr(merge_bb);
+0390    }
+0391    if (has_else) {
+0392      the_function->insert(the_function->end(), else_bb);
+0393      builder->SetInsertPoint(else_bb);
+0394      st.enter_scope();
+0395      visit(node->children[2].get());
+0396      st.exit_scope();
+0397      if (!builder->GetInsertBlock()->getTerminator()) {
+0398        builder->CreateBr(merge_bb);
+0399      }
+0400    }
+0401    the_function->insert(the_function->end(), merge_bb);
+0402    builder->SetInsertPoint(merge_bb);
+0403    return nullptr;
+0404  }
+0405  llvm::Value *CodeGen::visit_while_stmt(AST *node) {
+0406    llvm::Function *the_function = builder->GetInsertBlock()->getParent();
+0407    llvm::BasicBlock *cond_bb =
+0408        llvm::BasicBlock::Create(*context, "cond", the_function);
+0409    llvm::BasicBlock *loop_bb =
+0410        llvm::BasicBlock::Create(*context, "loop", the_function);
+0411    llvm::BasicBlock *after_bb =
+0412        llvm::BasicBlock::Create(*context, "afterloop", the_function);
+0413    builder->CreateBr(cond_bb);
+0414    builder->SetInsertPoint(cond_bb);
+0415    llvm::Value *cond = visit(node->children[0].get());
+0416    builder->CreateCondBr(cond, loop_bb, after_bb);
+0417    builder->SetInsertPoint(loop_bb);
+0418    st.enter_scope();
+0419    visit(node->children[1].get());
+0420    st.exit_scope();
+0421    if (!builder->GetInsertBlock()->getTerminator()) {
+0422      builder->CreateBr(cond_bb);
+0423    }
+0424    builder->SetInsertPoint(after_bb);
+0425    return nullptr;
+0426  }
+0427  llvm::Value *CodeGen::visit_return_stmt(AST *node) {
+0428    if (node->children.empty()) {
+0429      return builder->CreateRetVoid();
+0430    } else {
+0431      llvm::Value *ret_val = visit(node->children[0].get());
+0432      if (!ret_val) return builder->CreateRetVoid();
+0433      bool is_tensor_ret = current_function->getReturnType()->isVoidTy();
+0434      if (is_tensor_ret) {
+0435        llvm::Value *out_ret = current_function->getArg(0);
+0436        llvm::Function *copyF = module->getFunction("zorn_tensor_copy");
+0437        if (!copyF) {
+0438            llvm::FunctionType *FT = llvm::FunctionType::get(llvm::Type::getVoidTy(*context), {llvm::PointerType::getUnqual(*context), llvm::PointerType::getUnqual(*context)}, false);
+0439            copyF = llvm::Function::Create(FT, llvm::Function::ExternalLinkage, "zorn_tensor_copy", module.get());
+0440        }
+0441        builder->CreateCall(copyF, {out_ret, ret_val});
+0442        return builder->CreateRetVoid();
+0443      }
+0444      return builder->CreateRet(ret_val);
+0445    }
+0446  }
+0447  llvm::Value *CodeGen::visit_expr_stmt(AST *node) {
+0448    return visit(node->children[0].get());
+0449  }
+0450  llvm::Value *CodeGen::visit_assign_expr(AST *node) {
+0451    llvm::Value *val = visit(node->children[1].get());
+0452    if (node->children[0]->node == Node::ID) {
+0453      std::string name = std::get<std::string>(node->children[0]->v);
+0454      SymbolInfo *sym = st.lookup(name);
+0455      if (sym && sym->llvm_value) {
+0456        builder->CreateStore(val, sym->llvm_value);
+0457        return val;
+0458      }
+0459    } else if (node->children[0]->node == Node::POSTFIX_OP) {
+0460      auto post_node = node->children[0].get();
+0461      if (std::holds_alternative<PostfixOpNode>(post_node->v) &&
+0462          std::get<PostfixOpNode>(post_node->v) == PostfixOpNode::INDEX) {
+0463        llvm::Value *tensor_val = visit(post_node->children[0].get());
+0464        llvm::Function *F = module->getFunction("zorn_tensor_set");
+0465        if (!F) {
+0466          llvm::FunctionType *FT =
+0467              llvm::FunctionType::get(llvm::Type::getVoidTy(*context),
+0468                                      {llvm::PointerType::getUnqual(*context),
+0469                                       llvm::Type::getInt64Ty(*context),
+0470                                       llvm::PointerType::getUnqual(*context),
+0471                                       llvm::Type::getDoubleTy(*context)},
+0472                                      false);
+0473          F = llvm::Function::Create(FT, llvm::Function::ExternalLinkage,
+0474                                     "zorn_tensor_set", module.get());
+0475        }
+0476        int64_t num_indices = post_node->children.size() - 1;
+0477        llvm::Value *num_idx_val =
+0478            llvm::ConstantInt::get(*context, llvm::APInt(64, num_indices, true));
+0479        llvm::AllocaInst *indices_array =
+0480            builder->CreateAlloca(llvm::Type::getInt64Ty(*context), num_idx_val);
+0481        for (size_t i = 1; i <= num_indices; i++) {
+0482          llvm::Value *idx_val = visit(post_node->children[i].get());
+0483          llvm::Value *offset =
+0484              llvm::ConstantInt::get(*context, llvm::APInt(64, i - 1, true));
+0485          llvm::Value *ptr = builder->CreateGEP(llvm::Type::getInt64Ty(*context),
+0486                                                indices_array, {offset});
+0487          builder->CreateStore(idx_val, ptr);
+0488        }
+0489        llvm::Value *double_val = val;
+0490        if (val->getType()->isIntegerTy())
+0491          double_val = builder->CreateSIToFP(
+0492              val, llvm::Type::getDoubleTy(*context), "casttodouble");
+0493        builder->CreateCall(F,
+0494                            {tensor_val, num_idx_val, indices_array, double_val});
+0495        return val;
+0496      }
+0497    }
+0498    return nullptr;
+0499  }
+0500  llvm::Value *CodeGen::visit_primary_expr(AST *node) {
+0501    switch (node->node) {
+0502    case Node::INT_LIT:
+0503      return llvm::ConstantInt::get(
+0504          *context, llvm::APInt(64, std::get<int64_t>(node->v), true));
+0505    case Node::FLOAT_LIT:
+0506      return llvm::ConstantFP::get(*context,
+0507                                   llvm::APFloat(std::get<double>(node->v)));
+0508    case Node::BOOL:
+0509      return llvm::ConstantInt::get(
+0510          *context, llvm::APInt(1, std::get<bool>(node->v) ? 1 : 0));
+0511    case Node::STRING_LIT: {
+0512      std::string str_val = std::get<std::string>(node->v);
+0513      llvm::GlobalVariable *str_global = builder->CreateGlobalString(str_val, "str");
+0514      return builder->CreateConstGEP2_32(str_global->getValueType(), str_global, 0, 0, "strptr");
+0515    }
+0516    case Node::ID: {
+0517      std::string name = std::get<std::string>(node->v);
+0518      SymbolInfo *sym = st.lookup(name);
+0519      if (sym && sym->llvm_value) {
+0520        if (sym->is_function) {
+0521          return sym->llvm_value;
+0522        }
+0523        return builder->CreateLoad(get_llvm_type(sym->type), sym->llvm_value,
+0524                                   name);
+0525      }
+0526      return nullptr;
+0527    }
+0528    case Node::TENSOR_INIT: {
+0529      llvm::Value *tensor = allocate_tensor_on_stack(node->type);
+0530      llvm::Value *default_val = visit_expr(node->children[1].get());
+0531      if (default_val->getType()->isIntegerTy(1)) {
+0532          default_val = builder->CreateUIToFP(default_val, llvm::Type::getDoubleTy(*context));
+0533      } else if (default_val->getType()->isIntegerTy(64)) {
+0534          default_val = builder->CreateSIToFP(default_val, llvm::Type::getDoubleTy(*context));
+0535      }
+0536      llvm::Function *fillF = module->getFunction("zorn_tensor_fill");
+0537      if (!fillF) {
+0538        llvm::FunctionType *fillFT = llvm::FunctionType::get(
+0539            llvm::Type::getVoidTy(*context),
+0540            {llvm::PointerType::getUnqual(*context), llvm::Type::getDoubleTy(*context)}, false);
+0541        fillF = llvm::Function::Create(fillFT, llvm::Function::ExternalLinkage, "zorn_tensor_fill", module.get());
+0542      }
+0543      builder->CreateCall(fillF, {tensor, default_val});
+0544      return tensor;
+0545    }
+0546    case Node::TENSOR_LIT: {
+0547      if (node->children.size() > 0) {
+0548        llvm::Value *tensor = allocate_tensor_on_stack(node->type);
+0549        llvm::Function *setF = module->getFunction("zorn_tensor_set");
+0550        if (!setF) {
+0551          llvm::FunctionType *setFT = llvm::FunctionType::get(
+0552              llvm::Type::getVoidTy(*context),
+0553              {llvm::PointerType::getUnqual(*context), llvm::Type::getInt64Ty(*context),
+0554               llvm::PointerType::getUnqual(*context), llvm::Type::getDoubleTy(*context)}, false);
+0555          setF = llvm::Function::Create(setFT, llvm::Function::ExternalLinkage, "zorn_tensor_set", module.get());
+0556        }
+0557        int64_t ndim = node->type.sizes.size();
+0558        if (ndim == 1) {
+0559          llvm::Value *one_idx = llvm::ConstantInt::get(*context, llvm::APInt(64, 1, true));
+0560          llvm::AllocaInst *idx_slot = builder->CreateAlloca(llvm::Type::getInt64Ty(*context), one_idx);
+0561          for (size_t i = 0; i < node->children.size(); i++) {
+0562            llvm::Value *elem = visit(node->children[i].get());
+0563            llvm::Value *elem_dbl = elem;
+0564            if (elem->getType()->isIntegerTy())
+0565              elem_dbl = builder->CreateSIToFP(elem, llvm::Type::getDoubleTy(*context), "litcvt");
+0566            llvm::Value *idx_val = llvm::ConstantInt::get(*context, llvm::APInt(64, i, true));
+0567            builder->CreateStore(idx_val, idx_slot);
+0568            builder->CreateCall(setF, {tensor, one_idx, idx_slot, elem_dbl});
+0569          }
+0570        } else {
+0571          llvm::Function *getF = module->getFunction("zorn_tensor_get");
+0572          if (!getF) {
+0573            llvm::FunctionType *getFT = llvm::FunctionType::get(
+0574                llvm::Type::getDoubleTy(*context),
+0575                {llvm::PointerType::getUnqual(*context), llvm::Type::getInt64Ty(*context),
+0576                 llvm::PointerType::getUnqual(*context)}, false);
+0577            getF = llvm::Function::Create(getFT, llvm::Function::ExternalLinkage, "zorn_tensor_get", module.get());
+0578          }
+0579          llvm::Value *ndim_set = llvm::ConstantInt::get(*context, llvm::APInt(64, ndim, true));
+0580          llvm::AllocaInst *idx_arr = builder->CreateAlloca(llvm::Type::getInt64Ty(*context), ndim_set);
+0581          llvm::Value *one_sub = llvm::ConstantInt::get(*context, llvm::APInt(64, 1, true));
+0582          llvm::AllocaInst *sub_idx = builder->CreateAlloca(llvm::Type::getInt64Ty(*context), one_sub);
+0583          for (size_t i = 0; i < node->children.size(); i++) {
+0584            llvm::Value *row_idx = llvm::ConstantInt::get(*context, llvm::APInt(64, i, true));
+0585            llvm::Value *ptr0 = builder->CreateGEP(llvm::Type::getInt64Ty(*context), idx_arr,
+0586                {llvm::ConstantInt::get(*context, llvm::APInt(64, 0, true))});
+0587            builder->CreateStore(row_idx, ptr0);
+0588            if (node->children[i]->node == Node::TENSOR_LIT) {
+0589              llvm::Value *sub_tensor = visit(node->children[i].get());
+0590              for (size_t j = 0; j < node->children[i]->children.size(); j++) {
+0591                llvm::Value *col_idx = llvm::ConstantInt::get(*context, llvm::APInt(64, j, true));
+0592                builder->CreateStore(col_idx, sub_idx);
+0593                llvm::Value *val = builder->CreateCall(getF, {sub_tensor, one_sub, sub_idx}, "subval");
+0594                llvm::Value *ptr1 = builder->CreateGEP(llvm::Type::getInt64Ty(*context), idx_arr,
+0595                    {llvm::ConstantInt::get(*context, llvm::APInt(64, 1, true))});
+0596                builder->CreateStore(col_idx, ptr1);
+0597                builder->CreateCall(setF, {tensor, ndim_set, idx_arr, val});
+0598              }
+0599            } else {
+0600              llvm::Value *elem = visit(node->children[i].get());
+0601              llvm::Value *elem_dbl = elem;
+0602              if (elem->getType()->isIntegerTy())
+0603                elem_dbl = builder->CreateSIToFP(elem, llvm::Type::getDoubleTy(*context), "litcvt");
+0604              builder->CreateCall(setF, {tensor, one_sub, idx_arr, elem_dbl});
+0605            }
+0606          }
+0607        }
+0608        return tensor;
+0609      }
+0610      return nullptr;
+0611    }
+0612    default:
+0613      return nullptr;
+0614    }
+0615  }
+0616  llvm::Value *CodeGen::visit_expr(AST *node) {
+0617    if (node->node == Node::ASSIGN)
+0618      return visit_assign_expr(node);
+0619    if (node->node == Node::BINARY_OP)
+0620      return visit_binary_expr(node);
+0621    if (node->node == Node::POSTFIX_OP)
+0622      return visit_postfix_expr(node);
+0623    if (node->node == Node::UNARY_OP)
+0624      return visit_unary_expr(node);
+0625    if (node->node == Node::FN_CALL)
+0626      return visit_postfix_expr(node);
+0627    return visit_primary_expr(node);
+0628  }
+0629  llvm::Value *CodeGen::visit_binary_expr(AST *node) {
+0630    llvm::Value *l = visit(node->children[0].get());
+0631    llvm::Value *r = visit(node->children[1].get());
+0632    if (!l || !r)
+0633      return nullptr;
+0634    bool is_tensor = node->children[0]->type.type_node == TypeNode::MATRIX ||
+0635                     node->children[0]->type.type_node == TypeNode::VECTOR ||
+0636                     node->children[0]->type.type_node == TypeNode::TENSOR;
+0637    bool result_is_float = node->type.type_node == TypeNode::FLOAT;
+0638    auto promote = [&]() {
+0639      if (result_is_float) {
+0640        if (l->getType()->isIntegerTy(64))
+0641          l = builder->CreateSIToFP(l, llvm::Type::getDoubleTy(*context), "promo_l");
+0642        if (r->getType()->isIntegerTy(64))
+0643          r = builder->CreateSIToFP(r, llvm::Type::getDoubleTy(*context), "promo_r");
+0644      }
+0645    };
+0646    if (std::holds_alternative<AdditiveOpNode>(node->v)) {
+0647      auto op = std::get<AdditiveOpNode>(node->v);
+0648      if (is_tensor) {
+0649        llvm::Function *F = module->getFunction(
+0650            op == AdditiveOpNode::PLUS ? "zorn_tensor_add" : "zorn_tensor_sub");
+0651        if (!F) {
+0652          llvm::FunctionType *FT =
+0653              llvm::FunctionType::get(llvm::Type::getVoidTy(*context),
+0654                                      {llvm::PointerType::getUnqual(*context),
+0655                                       llvm::PointerType::getUnqual(*context),
+0656                                       llvm::PointerType::getUnqual(*context)},
+0657                                      false);
+0658          F = llvm::Function::Create(
+0659              FT, llvm::Function::ExternalLinkage,
+0660              op == AdditiveOpNode::PLUS ? "zorn_tensor_add" : "zorn_tensor_sub",
+0661              module.get());
+0662        }
+0663        llvm::Value *out = allocate_tensor_on_stack(node->type, "tensor_binop");
+0664        builder->CreateCall(F, {out, l, r});
+0665        return out;
+0666      } else {
+0667        promote();
+0668        if (op == AdditiveOpNode::PLUS)
+0669          return result_is_float ? builder->CreateFAdd(l, r, "faddtmp")
+0670                                 : builder->CreateAdd(l, r, "addtmp");
+0671        if (op == AdditiveOpNode::MINUS)
+0672          return result_is_float ? builder->CreateFSub(l, r, "fsubtmp")
+0673                                 : builder->CreateSub(l, r, "subtmp");
+0674      }
+0675    } else if (std::holds_alternative<MultiplicativeOpNode>(node->v)) {
+0676      auto op = std::get<MultiplicativeOpNode>(node->v);
+0677      if (op == MultiplicativeOpNode::MAT_MUL) {
+0678        llvm::Function *F = module->getFunction("zorn_mat_mul");
+0679        if (!F) {
+0680          llvm::FunctionType *FT =
+0681              llvm::FunctionType::get(llvm::Type::getVoidTy(*context),
+0682                                      {llvm::PointerType::getUnqual(*context),
+0683                                       llvm::PointerType::getUnqual(*context),
+0684                                       llvm::PointerType::getUnqual(*context)},
+0685                                      false);
+0686          F = llvm::Function::Create(FT, llvm::Function::ExternalLinkage,
+0687                                     "zorn_mat_mul", module.get());
+0688        }
+0689        llvm::Value *out = allocate_tensor_on_stack(node->type, "tensor_binop");
+0690        builder->CreateCall(F, {out, l, r});
+0691        return out;
+0692      } else if (is_tensor) {
+0693        const char* fn_name = "zorn_tensor_mul";
+0694        if (op == MultiplicativeOpNode::DIV) fn_name = "zorn_tensor_div";
+0695        else if (op == MultiplicativeOpNode::MOD) fn_name = "zorn_tensor_mod";
+0696        llvm::Function *F = module->getFunction(fn_name);
+0697        if (!F) {
+0698          llvm::FunctionType *FT =
+0699              llvm::FunctionType::get(llvm::Type::getVoidTy(*context),
+0700                                      {llvm::PointerType::getUnqual(*context),
+0701                                       llvm::PointerType::getUnqual(*context),
+0702                                       llvm::PointerType::getUnqual(*context)},
+0703                                      false);
+0704          F = llvm::Function::Create(FT, llvm::Function::ExternalLinkage,
+0705                                     fn_name,
+0706                                     module.get());
+0707        }
+0708        llvm::Value *out = allocate_tensor_on_stack(node->type, "tensor_binop");
+0709        builder->CreateCall(F, {out, l, r});
+0710        return out;
+0711      } else {
+0712        promote();
+0713        if (op == MultiplicativeOpNode::MUL)
+0714          return result_is_float ? builder->CreateFMul(l, r, "fmultmp")
+0715                                 : builder->CreateMul(l, r, "multmp");
+0716        if (op == MultiplicativeOpNode::DIV)
+0717          return result_is_float ? builder->CreateFDiv(l, r, "fdivtmp")
+0718                                 : builder->CreateSDiv(l, r, "divtmp");
+0719        if (op == MultiplicativeOpNode::MOD)
+0720          return result_is_float ? builder->CreateFRem(l, r, "fmodtmp")
+0721                                 : builder->CreateSRem(l, r, "modtmp");
+0722      }
+0723    } else if (std::holds_alternative<LogicalOpNode>(node->v)) {
+0724      auto op = std::get<LogicalOpNode>(node->v);
+0725      if (op == LogicalOpNode::AND)
+0726        return builder->CreateLogicalAnd(l, r, "andtmp");
+0727      if (op == LogicalOpNode::OR)
+0728        return builder->CreateLogicalOr(l, r, "ortmp");
+0729    } else if (std::holds_alternative<BitwiseOpNode>(node->v)) {
+0730      auto op = std::get<BitwiseOpNode>(node->v);
+0731      if (op == BitwiseOpNode::BITWISE_AND)
+0732        return builder->CreateAnd(l, r, "bitandtmp");
+0733      if (op == BitwiseOpNode::BITWISE_OR)
+0734        return builder->CreateOr(l, r, "bitorptmp");
+0735      if (op == BitwiseOpNode::BITWISE_XOR)
+0736        return builder->CreateXor(l, r, "bitxortmp");
+0737    } else if (std::holds_alternative<EqualityOpNode>(node->v)) {
+0738      auto op = std::get<EqualityOpNode>(node->v);
+0739      bool either_float = node->children[0]->type.type_node == TypeNode::FLOAT ||
+0740                          node->children[1]->type.type_node == TypeNode::FLOAT;
+0741      if (either_float) {
+0742        if (l->getType()->isIntegerTy(64))
+0743          l = builder->CreateSIToFP(l, llvm::Type::getDoubleTy(*context), "promo_l");
+0744        if (r->getType()->isIntegerTy(64))
+0745          r = builder->CreateSIToFP(r, llvm::Type::getDoubleTy(*context), "promo_r");
+0746      }
+0747      if (op == EqualityOpNode::EQ)
+0748        return either_float ? builder->CreateFCmpOEQ(l, r, "eqtmp")
+0749                            : builder->CreateICmpEQ(l, r, "eqtmp");
+0750      if (op == EqualityOpNode::NEQ)
+0751        return either_float ? builder->CreateFCmpONE(l, r, "netmp")
+0752                            : builder->CreateICmpNE(l, r, "netmp");
+0753    } else if (std::holds_alternative<RelationalOpNode>(node->v)) {
+0754      auto op = std::get<RelationalOpNode>(node->v);
+0755      bool either_float = node->children[0]->type.type_node == TypeNode::FLOAT ||
+0756                          node->children[1]->type.type_node == TypeNode::FLOAT;
+0757      if (either_float) {
+0758        if (l->getType()->isIntegerTy(64))
+0759          l = builder->CreateSIToFP(l, llvm::Type::getDoubleTy(*context), "promo_l");
+0760        if (r->getType()->isIntegerTy(64))
+0761          r = builder->CreateSIToFP(r, llvm::Type::getDoubleTy(*context), "promo_r");
+0762      }
+0763      if (op == RelationalOpNode::LESS)
+0764        return either_float ? builder->CreateFCmpOLT(l, r, "lttmp")
+0765                            : builder->CreateICmpSLT(l, r, "lttmp");
+0766      if (op == RelationalOpNode::LEQ)
+0767        return either_float ? builder->CreateFCmpOLE(l, r, "letmp")
+0768                            : builder->CreateICmpSLE(l, r, "letmp");
+0769      if (op == RelationalOpNode::GREATER)
+0770        return either_float ? builder->CreateFCmpOGT(l, r, "gttmp")
+0771                            : builder->CreateICmpSGT(l, r, "gttmp");
+0772      if (op == RelationalOpNode::GEQ)
+0773        return either_float ? builder->CreateFCmpOGE(l, r, "getmp")
+0774                            : builder->CreateICmpSGE(l, r, "getmp");
+0775    }
+0776    return nullptr;
+0777  }
+0778  llvm::Value *CodeGen::visit_postfix_expr(AST *node) {
+0779    if (!std::holds_alternative<PostfixOpNode>(node->v))
+0780      return nullptr;
+0781    auto op = std::get<PostfixOpNode>(node->v);
+0782    if (op == PostfixOpNode::ARGUMENT) {
+0783      if (std::holds_alternative<std::string>(node->children[0]->v)) {
+0784        std::string name = std::get<std::string>(node->children[0]->v);
+0785        SymbolInfo *sym = st.lookup(name);
+0786        if (sym && sym->is_function) {
+0787          llvm::Function *calleeF = llvm::cast<llvm::Function>(sym->llvm_value);
+0788          std::vector<llvm::Value *> args;
+0789          for (size_t i = 1; i < node->children.size(); i++) {
+0790            args.push_back(visit(node->children[i].get()));
+0791          }
+0792          bool is_tensor_ret = (node->type.type_node == TypeNode::VECTOR || node->type.type_node == TypeNode::MATRIX || node->type.type_node == TypeNode::TENSOR);
+0793          llvm::Value *out_tensor = nullptr;
+0794          if (is_tensor_ret) {
+0795              out_tensor = allocate_tensor_on_stack(node->type, "call_out");
+0796              args.insert(args.begin(), out_tensor);
+0797          }
+0798          if (calleeF->getReturnType()->isVoidTy()) {
+0799              builder->CreateCall(calleeF, args);
+0800              return is_tensor_ret ? out_tensor : nullptr;
+0801          }
+0802          llvm::Value *call_res = builder->CreateCall(calleeF, args, "calltmp");
+0803          return is_tensor_ret ? out_tensor : call_res;
+0804        }
+0805      }
+0806    } else if (op == PostfixOpNode::INDEX) {
+0807      llvm::Value *tensor_val = visit(node->children[0].get());
+0808      llvm::Function *F = module->getFunction("zorn_tensor_get");
+0809      if (!F) {
+0810        llvm::FunctionType *FT =
+0811            llvm::FunctionType::get(llvm::Type::getDoubleTy(*context),
+0812                                    {llvm::PointerType::getUnqual(*context),
+0813                                     llvm::Type::getInt64Ty(*context),
+0814                                     llvm::PointerType::getUnqual(*context)},
+0815                                    false);
+0816        F = llvm::Function::Create(FT, llvm::Function::ExternalLinkage,
+0817                                   "zorn_tensor_get", module.get());
+0818      }
+0819      int64_t num_indices = node->children.size() - 1;
+0820      llvm::Value *num_idx_val =
+0821          llvm::ConstantInt::get(*context, llvm::APInt(64, num_indices, true));
+0822      llvm::AllocaInst *indices_array =
+0823          builder->CreateAlloca(llvm::Type::getInt64Ty(*context), num_idx_val);
+0824      for (size_t i = 1; i <= (size_t)num_indices; i++) {
+0825        llvm::Value *idx_val = visit(node->children[i].get());
+0826        llvm::Value *offset =
+0827            llvm::ConstantInt::get(*context, llvm::APInt(64, i - 1, true));
+0828        llvm::Value *ptr = builder->CreateGEP(llvm::Type::getInt64Ty(*context),
+0829                                              indices_array, {offset});
+0830        builder->CreateStore(idx_val, ptr);
+0831      }
+0832      llvm::Value *result = builder->CreateCall(F, {tensor_val, num_idx_val, indices_array}, "gettmp");
+0833      if (node->type.type_node == TypeNode::INT) {
+0834        return builder->CreateFPToSI(result, llvm::Type::getInt64Ty(*context), "idxcvt");
+0835      } else if (node->type.type_node == TypeNode::BOOL) {
+0836        return builder->CreateFCmpUNE(result, llvm::ConstantFP::get(*context, llvm::APFloat(0.0)), "boolcvt");
+0837      }
+0838      return result;
+0839    } else {
+0840      llvm::Value *operand = visit(node->children[0].get());
+0841      if (op == PostfixOpNode::TRANSPOSE) {
+0842        llvm::Function *F = module->getFunction("zorn_transpose");
+0843        if (!F) {
+0844          llvm::FunctionType *FT = llvm::FunctionType::get(
+0845              llvm::Type::getVoidTy(*context),
+0846              {llvm::PointerType::getUnqual(*context), llvm::PointerType::getUnqual(*context)}, false);
+0847          F = llvm::Function::Create(FT, llvm::Function::ExternalLinkage,
+0848                                     "zorn_transpose", module.get());
+0849        }
+0850        llvm::Value *out = allocate_tensor_on_stack(node->type, "tensor_trans_inv");
+0851        builder->CreateCall(F, {out, operand});
+0852        return out;
+0853      } else if (op == PostfixOpNode::INVERSE) {
+0854        llvm::Function *F = module->getFunction("zorn_inverse");
+0855        if (!F) {
+0856          llvm::FunctionType *FT = llvm::FunctionType::get(
+0857              llvm::Type::getVoidTy(*context),
+0858              {llvm::PointerType::getUnqual(*context), llvm::PointerType::getUnqual(*context)}, false);
+0859          F = llvm::Function::Create(FT, llvm::Function::ExternalLinkage,
+0860                                     "zorn_inverse", module.get());
+0861        }
+0862        llvm::Value *out = allocate_tensor_on_stack(node->type, "tensor_trans_inv");
+0863        builder->CreateCall(F, {out, operand});
+0864        return out;
+0865      } else if (op == PostfixOpNode::DOT) {
+0866        llvm::Function *F = module->getFunction("zorn_tensor_shape");
+0867        if (!F) {
+0868          llvm::FunctionType *FT = llvm::FunctionType::get(
+0869              llvm::Type::getVoidTy(*context),
+0870              {llvm::PointerType::getUnqual(*context), llvm::PointerType::getUnqual(*context)}, false);
+0871          F = llvm::Function::Create(FT, llvm::Function::ExternalLinkage,
+0872                                     "zorn_tensor_shape", module.get());
+0873        }
+0874        llvm::Value *out = allocate_tensor_on_stack(node->type, "tensor_trans_inv");
+0875        builder->CreateCall(F, {out, operand});
+0876        return out;
+0877      }
+0878    }
+0879    return nullptr;
+0880  }
+0881  llvm::Value *CodeGen::visit_print_stmt(AST *node) {
+0882    llvm::Value *val = visit(node->children[0].get());
+0883    auto type_node = node->children[0]->type.type_node;
+0884    bool is_println = std::holds_alternative<PrintNode>(node->v) &&
+0885                      std::get<PrintNode>(node->v) == PrintNode::PRINTLN;
+0886    std::string suffix = is_println ? "" : "_nn";
+0887    if (type_node == TypeNode::MATRIX || type_node == TypeNode::VECTOR ||
+0888        type_node == TypeNode::TENSOR) {
+0889      std::string fname = "zorn_print_tensor" + suffix;
+0890      llvm::Function *F = module->getFunction(fname);
+0891      if (!F) {
+0892        llvm::FunctionType *FT = llvm::FunctionType::get(
+0893            llvm::Type::getVoidTy(*context),
+0894            {llvm::PointerType::getUnqual(*context)}, false);
+0895        F = llvm::Function::Create(FT, llvm::Function::ExternalLinkage, fname,
+0896                                   module.get());
+0897      }
+0898      builder->CreateCall(F, {val});
+0899    } else if (type_node == TypeNode::FLOAT) {
+0900      std::string fname = "zorn_print_float" + suffix;
+0901      llvm::Function *F = module->getFunction(fname);
+0902      if (!F) {
+0903        llvm::FunctionType *FT =
+0904            llvm::FunctionType::get(llvm::Type::getVoidTy(*context),
+0905                                    {llvm::Type::getDoubleTy(*context)}, false);
+0906        F = llvm::Function::Create(FT, llvm::Function::ExternalLinkage, fname,
+0907                                   module.get());
+0908      }
+0909      builder->CreateCall(F, {val});
+0910    } else if (type_node == TypeNode::BOOL) {
+0911      std::string fname = "zorn_print_bool" + suffix;
+0912      llvm::Function *F = module->getFunction(fname);
+0913      if (!F) {
+0914        llvm::FunctionType *FT =
+0915            llvm::FunctionType::get(llvm::Type::getVoidTy(*context),
+0916                                    {llvm::Type::getInt1Ty(*context)}, false);
+0917        F = llvm::Function::Create(FT, llvm::Function::ExternalLinkage, fname,
+0918                                   module.get());
+0919      }
+0920      builder->CreateCall(F, {val});
+0921    } else if (type_node == TypeNode::STRING) {
+0922      std::string fname = "zorn_print_string" + suffix;
+0923      llvm::Function *F = module->getFunction(fname);
+0924      if (!F) {
+0925        llvm::FunctionType *FT =
+0926            llvm::FunctionType::get(llvm::Type::getVoidTy(*context),
+0927                                    {llvm::PointerType::getUnqual(*context)}, false);
+0928        F = llvm::Function::Create(FT, llvm::Function::ExternalLinkage, fname,
+0929                                   module.get());
+0930      }
+0931      builder->CreateCall(F, {val});
+0932    } else {
+0933      std::string fname = "zorn_print_int" + suffix;
+0934      llvm::Function *F = module->getFunction(fname);
+0935      if (!F) {
+0936        llvm::FunctionType *FT =
+0937            llvm::FunctionType::get(llvm::Type::getVoidTy(*context),
+0938                                    {llvm::Type::getInt64Ty(*context)}, false);
+0939        F = llvm::Function::Create(FT, llvm::Function::ExternalLinkage, fname,
+0940                                   module.get());
+0941      }
+0942      builder->CreateCall(F, {val});
+0943    }
+0944    return nullptr;
+0945  }
+0946  llvm::Value *CodeGen::visit_unary_expr(AST *node) {
+0947    if (std::holds_alternative<UnaryOpNode>(node->v)) {
+0948      auto op = std::get<UnaryOpNode>(node->v);
+0949      llvm::Value *operand = visit(node->children[0].get());
+0950      if (!operand)
+0951        return nullptr;
+0952      bool is_float = node->children[0]->type.type_node == TypeNode::FLOAT;
+0953      if (op == UnaryOpNode::MINUS)
+0954        return is_float ? builder->CreateFNeg(operand, "negtmp")
+0955                        : builder->CreateNeg(operand, "negtmp");
+0956      if (op == UnaryOpNode::NOT)
+0957        return builder->CreateXor(operand, llvm::ConstantInt::get(operand->getType(), 1), "nottmp");
+0958      if (op == UnaryOpNode::BITWISE_NOT)
+0959        return builder->CreateNot(operand, "bitnotmp");
+0960      if (op == UnaryOpNode::PLUS)
+0961        return operand;
+0962    }
+0963    return nullptr;
+0964  }
+0965  llvm::Value *CodeGen::visit_for_stmt(AST *node) {
+0966    std::string var_name = std::get<std::string>(node->children[0]->v);
+0967    AST *iter_node = node->children[1].get();
+0968    llvm::Function *the_function = builder->GetInsertBlock()->getParent();
+0969    if (iter_node->node == Node::RANGE) {
+0970      llvm::Value *start_val = visit(iter_node->children[0].get());
+0971      llvm::Value *end_val = visit(iter_node->children[1].get());
+0972      llvm::Value *step_val = iter_node->children.size() > 2
+0973          ? visit(iter_node->children[2].get())
+0974          : llvm::ConstantInt::get(*context, llvm::APInt(64, 1, true));
+0975      llvm::AllocaInst *alloca = create_entry_block_alloca(
+0976          the_function, var_name, llvm::Type::getInt64Ty(*context));
+0977      builder->CreateStore(start_val, alloca);
+0978      llvm::BasicBlock *cond_bb = llvm::BasicBlock::Create(*context, "forcond", the_function);
+0979      llvm::BasicBlock *loop_bb = llvm::BasicBlock::Create(*context, "forloop", the_function);
+0980      llvm::BasicBlock *after_bb = llvm::BasicBlock::Create(*context, "forafter", the_function);
+0981      builder->CreateBr(cond_bb);
+0982      builder->SetInsertPoint(cond_bb);
+0983      llvm::Value *curr_val = builder->CreateLoad(llvm::Type::getInt64Ty(*context), alloca, var_name);
+0984      builder->CreateCondBr(builder->CreateICmpSLT(curr_val, end_val, "forcond"), loop_bb, after_bb);
+0985      builder->SetInsertPoint(loop_bb);
+0986      st.enter_scope();
+0987      SymbolInfo sym_info(Type::from_type_node(TypeNode::INT), false);
+0988      sym_info.llvm_value = alloca;
+0989      st.declare(var_name, sym_info);
+0990      visit(node->children[2].get());
+0991      st.exit_scope();
+0992      if (!builder->GetInsertBlock()->getTerminator()) {
+0993        llvm::Value *cur = builder->CreateLoad(llvm::Type::getInt64Ty(*context), alloca, var_name);
+0994        builder->CreateStore(builder->CreateAdd(cur, step_val, "nextval"), alloca);
+0995        builder->CreateBr(cond_bb);
+0996      }
+0997      builder->SetInsertPoint(after_bb);
+0998    } else {
+0999      llvm::Value *tensor_val = visit(iter_node);
+1000      llvm::Function *getF = module->getFunction("zorn_tensor_get");
+1001      if (!getF) {
+1002        llvm::FunctionType *FT = llvm::FunctionType::get(
+1003            llvm::Type::getDoubleTy(*context),
+1004            {llvm::PointerType::getUnqual(*context), llvm::Type::getInt64Ty(*context), llvm::PointerType::getUnqual(*context)}, false);
+1005        getF = llvm::Function::Create(FT, llvm::Function::ExternalLinkage, "zorn_tensor_get", module.get());
+1006      }
+1007      llvm::Function *shapeF = module->getFunction("zorn_tensor_shape");
+1008      if (!shapeF) {
+1009        llvm::FunctionType *FT = llvm::FunctionType::get(
+1010            llvm::PointerType::getUnqual(*context), {llvm::PointerType::getUnqual(*context)}, false);
+1011        shapeF = llvm::Function::Create(FT, llvm::Function::ExternalLinkage, "zorn_tensor_shape", module.get());
+1012      }
+1013      
+1014      Type shape_type;
+1015      shape_type.type_node = TypeNode::VECTOR;
+1016      shape_type.base_type = TypeNode::INT;
+1017      
+1018      shape_type.sizes.push_back(iter_node->type.sizes.size());
+1019      llvm::Value *shape_tensor = allocate_tensor_on_stack(shape_type, "shape_out");
+1020      builder->CreateCall(shapeF, {shape_tensor, tensor_val});
+1021      llvm::Value *one_val = llvm::ConstantInt::get(*context, llvm::APInt(64, 1, true));
+1022      llvm::Value *zero_val = llvm::ConstantInt::get(*context, llvm::APInt(64, 0, true));
+1023      llvm::AllocaInst *idx_arr = builder->CreateAlloca(llvm::Type::getInt64Ty(*context), one_val);
+1024      builder->CreateStore(zero_val, idx_arr);
+1025      llvm::Value *size_dbl = builder->CreateCall(getF, {shape_tensor, one_val, idx_arr}, "sizetmp");
+1026      llvm::Value *size_int = builder->CreateFPToSI(size_dbl, llvm::Type::getInt64Ty(*context), "sizeint");
+1027      llvm::AllocaInst *counter = create_entry_block_alloca(the_function, var_name + ".idx", llvm::Type::getInt64Ty(*context));
+1028      builder->CreateStore(zero_val, counter);
+1029      bool is_float_elem = iter_node->type.base_type == TypeNode::FLOAT;
+1030      llvm::Type *elem_type = is_float_elem ? llvm::Type::getDoubleTy(*context) : llvm::Type::getInt64Ty(*context);
+1031      llvm::AllocaInst *elem_alloca = create_entry_block_alloca(the_function, var_name, elem_type);
+1032      llvm::BasicBlock *cond_bb = llvm::BasicBlock::Create(*context, "foreach_cond", the_function);
+1033      llvm::BasicBlock *loop_bb = llvm::BasicBlock::Create(*context, "foreach_body", the_function);
+1034      llvm::BasicBlock *after_bb = llvm::BasicBlock::Create(*context, "foreach_after", the_function);
+1035      builder->CreateBr(cond_bb);
+1036      builder->SetInsertPoint(cond_bb);
+1037      llvm::Value *cur_idx = builder->CreateLoad(llvm::Type::getInt64Ty(*context), counter, var_name + ".idx");
+1038      builder->CreateCondBr(builder->CreateICmpSLT(cur_idx, size_int, "foreach_cond"), loop_bb, after_bb);
+1039      builder->SetInsertPoint(loop_bb);
+1040      builder->CreateStore(cur_idx, idx_arr);
+1041      llvm::Value *elem_dbl = builder->CreateCall(getF, {tensor_val, one_val, idx_arr}, "elemtmp");
+1042      llvm::Value *elem_val = is_float_elem ? elem_dbl : builder->CreateFPToSI(elem_dbl, llvm::Type::getInt64Ty(*context), "elemint");
+1043      builder->CreateStore(elem_val, elem_alloca);
+1044      st.enter_scope();
+1045      Type var_type = Type::from_type_node(iter_node->type.base_type);
+1046      SymbolInfo sym_info(var_type, false);
+1047      sym_info.llvm_value = elem_alloca;
+1048      st.declare(var_name, sym_info);
+1049      visit(node->children[2].get());
+1050      st.exit_scope();
+1051      if (!builder->GetInsertBlock()->getTerminator()) {
+1052        llvm::Value *next_idx = builder->CreateAdd(cur_idx, one_val, "nextidx");
+1053        builder->CreateStore(next_idx, counter);
+1054        builder->CreateBr(cond_bb);
+1055      }
+1056      builder->SetInsertPoint(after_bb);
+1057    }
+1058    return nullptr;
+1059  }
+
+
++-----------------------------------------------------------------------------+
+| src/backend/zorn_runtime.cpp                                                 |
++-----------------------------------------------------------------------------+
+
+0001  #include <cmath>
+0002  #include <cstdlib>
+0003  #include <iostream>
+0004  #include <vector>
+0005  
+0006  extern "C" {
+0007  
+0008  struct ZornTensor {
+0009    int64_t ndim;
+0010    int64_t *sizes;
+0011    double *data;
+0012  };
+0013  
+0014  void zorn_tensor_fill(ZornTensor *t, double val) {
+0015    int64_t total_size = 1;
+0016    for (int64_t i = 0; i < t->ndim; i++) {
+0017      total_size *= t->sizes[i];
+0018    }
+0019    if (total_size == 0) total_size = 1;
+0020    for (int64_t i = 0; i < total_size; i++) {
+0021      t->data[i] = val;
+0022    }
+0023  }
+0024  
+0025  void zorn_mat_mul(ZornTensor *c, ZornTensor *a, ZornTensor *b) {
+0026    if (a->ndim != 2 || b->ndim != 2 || c->ndim != 2)
+0027      return;
+0028    int64_t m = a->sizes[0];
+0029    int64_t k = a->sizes[1];
+0030    int64_t n = b->sizes[1];
+0031    for (int64_t i = 0; i < m; i++) {
+0032      for (int64_t j = 0; j < n; j++) {
+0033        double sum = 0;
+0034        for (int64_t l = 0; l < k; l++) {
+0035          sum += a->data[i * k + l] * b->data[l * n + j];
+0036        }
+0037        c->data[i * n + j] = sum;
+0038      }
+0039    }
+0040  }
+0041  
+0042  void zorn_transpose(ZornTensor *c, ZornTensor *a) {
+0043    if (a->ndim != 2 || c->ndim != 2)
+0044      return;
+0045    int64_t m = a->sizes[0];
+0046    int64_t n = a->sizes[1];
+0047    for (int64_t i = 0; i < m; i++) {
+0048      for (int64_t j = 0; j < n; j++) {
+0049        c->data[j * m + i] = a->data[i * n + j];
+0050      }
+0051    }
+0052  }
+0053  
+0054  void zorn_tensor_add(ZornTensor *c, ZornTensor *a, ZornTensor *b) {
+0055    int64_t total = 1;
+0056    for (int64_t i = 0; i < a->ndim; i++)
+0057      total *= a->sizes[i];
+0058    for (int64_t i = 0; i < total; i++)
+0059      c->data[i] = a->data[i] + b->data[i];
+0060  }
+0061  
+0062  void zorn_tensor_sub(ZornTensor *c, ZornTensor *a, ZornTensor *b) {
+0063    int64_t total = 1;
+0064    for (int64_t i = 0; i < a->ndim; i++)
+0065      total *= a->sizes[i];
+0066    for (int64_t i = 0; i < total; i++)
+0067      c->data[i] = a->data[i] - b->data[i];
+0068  }
+0069  
+0070  void zorn_tensor_mul(ZornTensor *c, ZornTensor *a, ZornTensor *b) {
+0071    int64_t total = 1;
+0072    for (int64_t i = 0; i < a->ndim; i++)
+0073      total *= a->sizes[i];
+0074    for (int64_t i = 0; i < total; i++)
+0075      c->data[i] = a->data[i] * b->data[i];
+0076  }
+0077  
+0078  void zorn_tensor_div(ZornTensor *c, ZornTensor *a, ZornTensor *b) {
+0079    int64_t total = 1;
+0080    for (int64_t i = 0; i < a->ndim; i++)
+0081      total *= a->sizes[i];
+0082    for (int64_t i = 0; i < total; i++)
+0083      c->data[i] = a->data[i] / b->data[i];
+0084  }
+0085  
+0086  void zorn_tensor_mod(ZornTensor *c, ZornTensor *a, ZornTensor *b) {
+0087    int64_t total = 1;
+0088    for (int64_t i = 0; i < a->ndim; i++)
+0089      total *= a->sizes[i];
+0090    for (int64_t i = 0; i < total; i++)
+0091      c->data[i] = std::fmod(a->data[i], b->data[i]);
+0092  }
+0093  
+0094  void zorn_inverse(ZornTensor *c, ZornTensor *a) {
+0095    if (a->ndim != 2 || a->sizes[0] != a->sizes[1] || c->ndim != 2)
+0096      return;
+0097    int64_t n = a->sizes[0];
+0098    for (int64_t i = 0; i < n; i++) {
+0099      for (int64_t j = 0; j < n; j++) {
+0100        c->data[i * n + j] = (i == j) ? 1.0 : 0.0;
+0101      }
+0102    }
+0103    std::vector<double> aug(n * n);
+0104    for (int64_t i = 0; i < n * n; i++)
+0105      aug[i] = a->data[i];
+0106    for (int64_t col = 0; col < n; col++) {
+0107      int64_t pivot = -1;
+0108      double max_val = 0.0;
+0109      for (int64_t row = col; row < n; row++) {
+0110        double val = std::abs(aug[row * n + col]);
+0111        if (val > max_val) {
+0112          max_val = val;
+0113          pivot = row;
+0114        }
+0115      }
+0116      if (pivot == -1 || max_val < 1e-12) {
+0117        for (int64_t i = 0; i < n * n; i++)
+0118          c->data[i] = 0.0;
+0119        return;
+0120      }
+0121      if (pivot != col) {
+0122        for (int64_t j = 0; j < n; j++) {
+0123          std::swap(aug[col * n + j], aug[pivot * n + j]);
+0124          std::swap(c->data[col * n + j], c->data[pivot * n + j]);
+0125        }
+0126      }
+0127      double scale = aug[col * n + col];
+0128      for (int64_t j = 0; j < n; j++) {
+0129        aug[col * n + j] /= scale;
+0130        c->data[col * n + j] /= scale;
+0131      }
+0132      for (int64_t row = 0; row < n; row++) {
+0133        if (row == col) continue;
+0134        double factor = aug[row * n + col];
+0135        for (int64_t j = 0; j < n; j++) {
+0136          aug[row * n + j] -= factor * aug[col * n + j];
+0137          c->data[row * n + j] -= factor * c->data[col * n + j];
+0138        }
+0139      }
+0140    }
+0141  }
+0142  
+0143  void zorn_tensor_shape(ZornTensor *c, ZornTensor *a) {
+0144    if (c->ndim != 1 || c->sizes[0] != a->ndim) return;
+0145    for (int64_t i = 0; i < a->ndim; i++)
+0146      c->data[i] = (double)a->sizes[i];
+0147  }
+0148  
+0149  double zorn_tensor_get(ZornTensor *a, int64_t num_indices, int64_t *indices) {
+0150    if (num_indices != a->ndim)
+0151      return 0.0;
+0152    int64_t flat_idx = 0;
+0153    int64_t stride = 1;
+0154    for (int64_t i = a->ndim - 1; i >= 0; i--) {
+0155      flat_idx += indices[i] * stride;
+0156      stride *= a->sizes[i];
+0157    }
+0158    return a->data[flat_idx];
+0159  }
+0160  
+0161  void zorn_tensor_set(ZornTensor *a, int64_t num_indices, int64_t *indices,
+0162                       double val) {
+0163    if (num_indices != a->ndim)
+0164      return;
+0165    int64_t flat_idx = 0;
+0166    int64_t stride = 1;
+0167    for (int64_t i = a->ndim - 1; i >= 0; i--) {
+0168      flat_idx += indices[i] * stride;
+0169      stride *= a->sizes[i];
+0170    }
+0171    a->data[flat_idx] = val;
+0172  }
+0173  
+0174  void zorn_print_tensor(ZornTensor *a) {
+0175    std::cout << "[Tensor dims=" << a->ndim << " shapes=(";
+0176    for (int i = 0; i < a->ndim; i++) {
+0177      std::cout << a->sizes[i] << (i == a->ndim - 1 ? "" : ",");
+0178    }
+0179    std::cout << ")]\n";
+0180  }
+0181  
+0182  void zorn_print_int(int64_t a) { std::cout << a << std::endl; }
+0183  void zorn_print_float(double a) { std::cout << a << std::endl; }
+0184  void zorn_print_bool(bool a) {
+0185    std::cout << (a ? "true" : "false") << std::endl;
+0186  }
+0187  
+0188  void zorn_print_tensor_nn(ZornTensor *a) {
+0189    std::cout << "[Tensor dims=" << a->ndim << " shapes=(";
+0190    for (int i = 0; i < a->ndim; i++) {
+0191      std::cout << a->sizes[i] << (i == a->ndim - 1 ? "" : ",");
+0192    }
+0193    std::cout << ")]";
+0194  }
+0195  
+0196  void zorn_print_int_nn(int64_t a) { std::cout << a; }
+0197  void zorn_print_float_nn(double a) { std::cout << a; }
+0198  void zorn_print_bool_nn(bool a) { std::cout << (a ? "true" : "false"); }
+0199  void zorn_print_string(const char *a) { std::cout << a << std::endl; }
+0200  void zorn_print_string_nn(const char *a) { std::cout << a; }
+0201  
+0202  void zorn_tensor_copy(ZornTensor *dest, ZornTensor *src) {
+0203    int64_t total = 1;
+0204    for (int64_t i = 0; i < src->ndim; i++) total *= src->sizes[i];
+0205    for (int64_t i = 0; i < total; i++) {
+0206      dest->data[i] = src->data[i];
+0207    }
+0208  }
+0209  }
+
+
++-----------------------------------------------------------------------------+
+| src/main.cpp                                                                 |
++-----------------------------------------------------------------------------+
+
+0001  #include "backend/codegen.hpp"
+0002  #include "lexer/lexer.hpp"
+0003  #include "parser/parser.hpp"
+0004  #include "semantic_analyzer/semantic_analyzer.hpp"
+0005  #include <cstdio>
+0006  #include <cstdlib>
+0007  #include <filesystem>
+0008  #include <fstream>
+0009  #include <iostream>
+0010  #include <sstream>
+0011  #include <string>
+0012  static void print_usage() {
+0013    std::cerr << "Usage: zornc <source.zn> [-o output] [--emit-ir] [--no-opt] "
+0014                 "[--emit-obj]\n";
+0015    std::cerr << "\n";
+0016    std::cerr << "Options:\n";
+0017    std::cerr << "  -o <file>    Output executable name (default: name of source "
+0018                 "without extension)\n";
+0019    std::cerr << "  --emit-ir    Print LLVM IR to stderr\n";
+0020    std::cerr << "  --no-opt     Skip optimization passes\n";
+0021    std::cerr << "  --emit-obj   Only emit object file, don't link\n";
+0022  }
+0023  int main(int argc, char *argv[]) {
+0024    if (argc < 2) {
+0025      print_usage();
+0026      return 1;
+0027    }
+0028    std::string source_file;
+0029    std::string output_name;
+0030    bool emit_ir = false;
+0031    bool no_opt = false;
+0032    bool emit_obj_only = false;
+0033    for (int i = 1; i < argc; i++) {
+0034      std::string arg = argv[i];
+0035      if (arg == "--emit-ir") {
+0036        emit_ir = true;
+0037      } else if (arg == "--no-opt") {
+0038        no_opt = true;
+0039      } else if (arg == "--emit-obj") {
+0040        emit_obj_only = true;
+0041      } else if (arg == "-o" && i + 1 < argc) {
+0042        output_name = argv[++i];
+0043      } else if (arg == "--help" || arg == "-h") {
+0044        print_usage();
+0045        return 0;
+0046      } else if (arg[0] == '-') {
+0047        std::cerr << "Unknown option: " << arg << "\n";
+0048        print_usage();
+0049        return 1;
+0050      } else {
+0051        source_file = arg;
+0052      }
+0053    }
+0054    if (source_file.empty()) {
+0055      std::cerr << "Error: no source file specified\n";
+0056      print_usage();
+0057      return 1;
+0058    }
+0059    namespace fs = std::filesystem;
+0060    fs::path src_path(source_file);
+0061    if (output_name.empty()) {
+0062      output_name = src_path.stem().string();
+0063    }
+0064    std::ifstream file(source_file);
+0065    if (!file.is_open()) {
+0066      std::cerr << "Error: could not open file '" << source_file << "'\n";
+0067      return 1;
+0068    }
+0069    std::stringstream buf;
+0070    buf << file.rdbuf();
+0071    std::string source = buf.str();
+0072    auto lexemes = maximal_munch(source);
+0073    Parser parser(lexemes);
+0074    auto ast = parser.parse_program();
+0075    SemanticAnalyzer analyzer(ast.get());
+0076    CodeGen codegen;
+0077    codegen.generate(ast.get());
+0078    if (emit_ir) {
+0079      codegen.dump_ir();
+0080    }
+0081    if (!no_opt) {
+0082      codegen.optimize();
+0083    }
+0084    std::string obj_file = output_name + ".o";
+0085    codegen.emit_object_code(obj_file);
+0086    if (emit_obj_only) {
+0087      std::cout << "Object file written to " << obj_file << "\n";
+0088      return 0;
+0089    }
+0090    std::string runtime_path = ZORNRT_PATH;
+0091    std::string link_cmd =
+0092        "clang++ " + obj_file + " " + runtime_path + " -o " + output_name;
+0093    int link_result = std::system(link_cmd.c_str());
+0094    std::remove(obj_file.c_str());
+0095    if (link_result != 0) {
+0096      std::cerr << "Error: linking failed\n";
+0097      return 1;
+0098    }
+0099    std::cout << "Compiled '" << source_file << "' -> './" << output_name
+0100              << "'\n";
+0101    return 0;
+0102  }
+
+
+```

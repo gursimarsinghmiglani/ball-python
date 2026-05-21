@@ -19,6 +19,40 @@ CodeGen::CodeGen() {
   llvm::InitializeNativeTargetAsmPrinter();
   llvm::InitializeNativeTargetAsmParser();
 }
+
+llvm::Value *CodeGen::allocate_tensor_on_stack(const Type &type, const std::string &name) {
+    llvm::StructType *tensor_struct_type = llvm::StructType::getTypeByName(*context, "ZornTensor");
+    if (!tensor_struct_type) {
+        tensor_struct_type = llvm::StructType::create(*context, {llvm::Type::getInt64Ty(*context), llvm::PointerType::getUnqual(*context), llvm::PointerType::getUnqual(*context)}, "ZornTensor");
+    }
+    
+    llvm::AllocaInst *tensor = create_entry_block_alloca(current_function, name, tensor_struct_type);
+    
+    int64_t ndim = type.sizes.size();
+    llvm::AllocaInst *sizes_array = builder->CreateAlloca(llvm::Type::getInt64Ty(*context), llvm::ConstantInt::get(*context, llvm::APInt(64, ndim, true)), name + "_sizes");
+    for (size_t i = 0; i < (size_t)ndim; i++) {
+        llvm::Value *idx = llvm::ConstantInt::get(*context, llvm::APInt(64, i, true));
+        llvm::Value *ptr = builder->CreateGEP(llvm::Type::getInt64Ty(*context), sizes_array, {idx});
+        builder->CreateStore(llvm::ConstantInt::get(*context, llvm::APInt(64, type.sizes[i], true)), ptr);
+    }
+    
+    int64_t total_size = 1;
+    for (int64_t s : type.sizes) total_size *= s;
+    if (total_size == 0) total_size = 1;
+    llvm::AllocaInst *data_array = builder->CreateAlloca(llvm::Type::getDoubleTy(*context), llvm::ConstantInt::get(*context, llvm::APInt(64, total_size, true)), name + "_data");
+    
+    llvm::Value *ndim_ptr = builder->CreateStructGEP(tensor_struct_type, tensor, 0);
+    builder->CreateStore(llvm::ConstantInt::get(*context, llvm::APInt(64, ndim, true)), ndim_ptr);
+    
+    llvm::Value *sizes_ptr = builder->CreateStructGEP(tensor_struct_type, tensor, 1);
+    builder->CreateStore(sizes_array, sizes_ptr);
+    
+    llvm::Value *data_ptr = builder->CreateStructGEP(tensor_struct_type, tensor, 2);
+    builder->CreateStore(data_array, data_ptr);
+    
+    return tensor;
+}
+
 llvm::Type *CodeGen::get_llvm_type(const Type &type) {
   switch (type.type_node) {
   case TypeNode::INT:
@@ -269,15 +303,28 @@ llvm::Value *CodeGen::visit_function_decl(AST *node) {
       ret_type = node->children[i]->type;
     }
   }
+  
+  bool is_tensor_ret = (ret_type.type_node == TypeNode::VECTOR || ret_type.type_node == TypeNode::MATRIX || ret_type.type_node == TypeNode::TENSOR);
+  if (is_tensor_ret) {
+      param_types.insert(param_types.begin(), llvm::PointerType::getUnqual(*context));
+  }
+  
   llvm::Type *llvm_ret_type = get_llvm_type(ret_type);
   llvm::FunctionType *FT =
-      llvm::FunctionType::get(llvm_ret_type, param_types, false);
+      llvm::FunctionType::get(is_tensor_ret ? llvm::Type::getVoidTy(*context) : llvm_ret_type, param_types, false);
   llvm::Function *F = llvm::Function::Create(
       FT, llvm::Function::ExternalLinkage, fn_name, module.get());
+      
   unsigned idx = 0;
   for (auto &arg : F->args()) {
-    arg.setName(param_names[idx++]);
+    if (is_tensor_ret && idx == 0) {
+        arg.setName("out_ret");
+    } else {
+        arg.setName(param_names[is_tensor_ret ? idx - 1 : idx]);
+    }
+    idx++;
   }
+  
   SymbolInfo sym_info(ret_type, std::vector<Type>());
   sym_info.is_function = true;
   sym_info.llvm_value = F;
@@ -286,14 +333,20 @@ llvm::Value *CodeGen::visit_function_decl(AST *node) {
   builder->SetInsertPoint(BB);
   current_function = F;
   st.enter_scope();
+  
   idx = 0;
   for (auto &arg : F->args()) {
+    if (is_tensor_ret && idx == 0) {
+        idx++;
+        continue;
+    }
+    int param_idx = is_tensor_ret ? idx - 1 : idx;
     llvm::AllocaInst *alloca =
-        create_entry_block_alloca(F, param_names[idx], arg.getType());
+        create_entry_block_alloca(F, param_names[param_idx], arg.getType());
     builder->CreateStore(&arg, alloca);
-    SymbolInfo param_info(node->children[idx + 1]->children[1]->type, false);
+    SymbolInfo param_info(node->children[param_idx + 1]->children[1]->type, false);
     param_info.llvm_value = alloca;
-    st.declare(param_names[idx], param_info);
+    st.declare(param_names[param_idx], param_info);
     idx++;
   }
   visit_block(node->children.back().get());
@@ -377,6 +430,17 @@ llvm::Value *CodeGen::visit_return_stmt(AST *node) {
   } else {
     llvm::Value *ret_val = visit(node->children[0].get());
     if (!ret_val) return builder->CreateRetVoid();
+    bool is_tensor_ret = current_function->getReturnType()->isVoidTy();
+    if (is_tensor_ret) {
+      llvm::Value *out_ret = current_function->getArg(0);
+      llvm::Function *copyF = module->getFunction("zorn_tensor_copy");
+      if (!copyF) {
+          llvm::FunctionType *FT = llvm::FunctionType::get(llvm::Type::getVoidTy(*context), {llvm::PointerType::getUnqual(*context), llvm::PointerType::getUnqual(*context)}, false);
+          copyF = llvm::Function::Create(FT, llvm::Function::ExternalLinkage, "zorn_tensor_copy", module.get());
+      }
+      builder->CreateCall(copyF, {out_ret, ret_val});
+      return builder->CreateRetVoid();
+    }
     return builder->CreateRet(ret_val);
   }
 }
@@ -462,39 +526,13 @@ llvm::Value *CodeGen::visit_primary_expr(AST *node) {
     return nullptr;
   }
   case Node::TENSOR_INIT: {
-    llvm::Function *F = module->getFunction("zorn_tensor_create");
-    if (!F) {
-      llvm::FunctionType *FT =
-          llvm::FunctionType::get(llvm::PointerType::getUnqual(*context),
-                                  {llvm::Type::getInt64Ty(*context),
-                                   llvm::PointerType::getUnqual(*context)},
-                                  false);
-      F = llvm::Function::Create(FT, llvm::Function::ExternalLinkage,
-                                 "zorn_tensor_create", module.get());
-    }
-    int64_t ndim = node->type.sizes.size();
-    llvm::Value *ndim_val =
-        llvm::ConstantInt::get(*context, llvm::APInt(64, ndim, true));
-    llvm::AllocaInst *sizes_array =
-        builder->CreateAlloca(llvm::Type::getInt64Ty(*context), ndim_val);
-    for (size_t i = 0; i < (size_t)ndim; i++) {
-      llvm::Value *idx =
-          llvm::ConstantInt::get(*context, llvm::APInt(64, i, true));
-      llvm::Value *ptr = builder->CreateGEP(llvm::Type::getInt64Ty(*context),
-                                            sizes_array, {idx});
-      llvm::Value *size_val = llvm::ConstantInt::get(
-          *context, llvm::APInt(64, node->type.sizes[i], true));
-      builder->CreateStore(size_val, ptr);
-    }
-    llvm::Value *tensor = builder->CreateCall(F, {ndim_val, sizes_array});
-
+    llvm::Value *tensor = allocate_tensor_on_stack(node->type);
     llvm::Value *default_val = visit_expr(node->children[1].get());
     if (default_val->getType()->isIntegerTy(1)) {
         default_val = builder->CreateUIToFP(default_val, llvm::Type::getDoubleTy(*context));
     } else if (default_val->getType()->isIntegerTy(64)) {
         default_val = builder->CreateSIToFP(default_val, llvm::Type::getDoubleTy(*context));
     }
-
     llvm::Function *fillF = module->getFunction("zorn_tensor_fill");
     if (!fillF) {
       llvm::FunctionType *fillFT = llvm::FunctionType::get(
@@ -507,31 +545,7 @@ llvm::Value *CodeGen::visit_primary_expr(AST *node) {
   }
   case Node::TENSOR_LIT: {
     if (node->children.size() > 0) {
-      llvm::Function *F = module->getFunction("zorn_tensor_create");
-      if (!F) {
-        llvm::FunctionType *FT =
-            llvm::FunctionType::get(llvm::PointerType::getUnqual(*context),
-                                    {llvm::Type::getInt64Ty(*context),
-                                     llvm::PointerType::getUnqual(*context)},
-                                    false);
-        F = llvm::Function::Create(FT, llvm::Function::ExternalLinkage,
-                                   "zorn_tensor_create", module.get());
-      }
-      int64_t ndim = node->type.sizes.size();
-      llvm::Value *ndim_val =
-          llvm::ConstantInt::get(*context, llvm::APInt(64, ndim, true));
-      llvm::AllocaInst *sizes_array =
-          builder->CreateAlloca(llvm::Type::getInt64Ty(*context), ndim_val);
-      for (size_t i = 0; i < (size_t)ndim; i++) {
-        llvm::Value *idx =
-            llvm::ConstantInt::get(*context, llvm::APInt(64, i, true));
-        llvm::Value *ptr = builder->CreateGEP(llvm::Type::getInt64Ty(*context),
-                                              sizes_array, {idx});
-        llvm::Value *size_val = llvm::ConstantInt::get(
-            *context, llvm::APInt(64, node->type.sizes[i], true));
-        builder->CreateStore(size_val, ptr);
-      }
-      llvm::Value *tensor = builder->CreateCall(F, {ndim_val, sizes_array});
+      llvm::Value *tensor = allocate_tensor_on_stack(node->type);
       llvm::Function *setF = module->getFunction("zorn_tensor_set");
       if (!setF) {
         llvm::FunctionType *setFT = llvm::FunctionType::get(
@@ -540,6 +554,7 @@ llvm::Value *CodeGen::visit_primary_expr(AST *node) {
              llvm::PointerType::getUnqual(*context), llvm::Type::getDoubleTy(*context)}, false);
         setF = llvm::Function::Create(setFT, llvm::Function::ExternalLinkage, "zorn_tensor_set", module.get());
       }
+      int64_t ndim = node->type.sizes.size();
       if (ndim == 1) {
         llvm::Value *one_idx = llvm::ConstantInt::get(*context, llvm::APInt(64, 1, true));
         llvm::AllocaInst *idx_slot = builder->CreateAlloca(llvm::Type::getInt64Ty(*context), one_idx);
@@ -635,8 +650,9 @@ llvm::Value *CodeGen::visit_binary_expr(AST *node) {
           op == AdditiveOpNode::PLUS ? "zorn_tensor_add" : "zorn_tensor_sub");
       if (!F) {
         llvm::FunctionType *FT =
-            llvm::FunctionType::get(llvm::PointerType::getUnqual(*context),
+            llvm::FunctionType::get(llvm::Type::getVoidTy(*context),
                                     {llvm::PointerType::getUnqual(*context),
+                                     llvm::PointerType::getUnqual(*context),
                                      llvm::PointerType::getUnqual(*context)},
                                     false);
         F = llvm::Function::Create(
@@ -644,7 +660,9 @@ llvm::Value *CodeGen::visit_binary_expr(AST *node) {
             op == AdditiveOpNode::PLUS ? "zorn_tensor_add" : "zorn_tensor_sub",
             module.get());
       }
-      return builder->CreateCall(F, {l, r});
+      llvm::Value *out = allocate_tensor_on_stack(node->type, "tensor_binop");
+      builder->CreateCall(F, {out, l, r});
+      return out;
     } else {
       promote();
       if (op == AdditiveOpNode::PLUS)
@@ -660,14 +678,17 @@ llvm::Value *CodeGen::visit_binary_expr(AST *node) {
       llvm::Function *F = module->getFunction("zorn_mat_mul");
       if (!F) {
         llvm::FunctionType *FT =
-            llvm::FunctionType::get(llvm::PointerType::getUnqual(*context),
+            llvm::FunctionType::get(llvm::Type::getVoidTy(*context),
                                     {llvm::PointerType::getUnqual(*context),
+                                     llvm::PointerType::getUnqual(*context),
                                      llvm::PointerType::getUnqual(*context)},
                                     false);
         F = llvm::Function::Create(FT, llvm::Function::ExternalLinkage,
                                    "zorn_mat_mul", module.get());
       }
-      return builder->CreateCall(F, {l, r});
+      llvm::Value *out = allocate_tensor_on_stack(node->type, "tensor_binop");
+      builder->CreateCall(F, {out, l, r});
+      return out;
     } else if (is_tensor) {
       const char* fn_name = "zorn_tensor_mul";
       if (op == MultiplicativeOpNode::DIV) fn_name = "zorn_tensor_div";
@@ -675,15 +696,18 @@ llvm::Value *CodeGen::visit_binary_expr(AST *node) {
       llvm::Function *F = module->getFunction(fn_name);
       if (!F) {
         llvm::FunctionType *FT =
-            llvm::FunctionType::get(llvm::PointerType::getUnqual(*context),
+            llvm::FunctionType::get(llvm::Type::getVoidTy(*context),
                                     {llvm::PointerType::getUnqual(*context),
+                                     llvm::PointerType::getUnqual(*context),
                                      llvm::PointerType::getUnqual(*context)},
                                     false);
         F = llvm::Function::Create(FT, llvm::Function::ExternalLinkage,
                                    fn_name,
                                    module.get());
       }
-      return builder->CreateCall(F, {l, r});
+      llvm::Value *out = allocate_tensor_on_stack(node->type, "tensor_binop");
+      builder->CreateCall(F, {out, l, r});
+      return out;
     } else {
       promote();
       if (op == MultiplicativeOpNode::MUL)
@@ -765,9 +789,18 @@ llvm::Value *CodeGen::visit_postfix_expr(AST *node) {
         for (size_t i = 1; i < node->children.size(); i++) {
           args.push_back(visit(node->children[i].get()));
         }
-        if (calleeF->getReturnType()->isVoidTy())
-          return builder->CreateCall(calleeF, args);
-        return builder->CreateCall(calleeF, args, "calltmp");
+        bool is_tensor_ret = (node->type.type_node == TypeNode::VECTOR || node->type.type_node == TypeNode::MATRIX || node->type.type_node == TypeNode::TENSOR);
+        llvm::Value *out_tensor = nullptr;
+        if (is_tensor_ret) {
+            out_tensor = allocate_tensor_on_stack(node->type, "call_out");
+            args.insert(args.begin(), out_tensor);
+        }
+        if (calleeF->getReturnType()->isVoidTy()) {
+            builder->CreateCall(calleeF, args);
+            return is_tensor_ret ? out_tensor : nullptr;
+        }
+        llvm::Value *call_res = builder->CreateCall(calleeF, args, "calltmp");
+        return is_tensor_ret ? out_tensor : call_res;
       }
     }
   } else if (op == PostfixOpNode::INDEX) {
@@ -809,32 +842,38 @@ llvm::Value *CodeGen::visit_postfix_expr(AST *node) {
       llvm::Function *F = module->getFunction("zorn_transpose");
       if (!F) {
         llvm::FunctionType *FT = llvm::FunctionType::get(
-            llvm::PointerType::getUnqual(*context),
-            {llvm::PointerType::getUnqual(*context)}, false);
+            llvm::Type::getVoidTy(*context),
+            {llvm::PointerType::getUnqual(*context), llvm::PointerType::getUnqual(*context)}, false);
         F = llvm::Function::Create(FT, llvm::Function::ExternalLinkage,
                                    "zorn_transpose", module.get());
       }
-      return builder->CreateCall(F, {operand});
+      llvm::Value *out = allocate_tensor_on_stack(node->type, "tensor_trans_inv");
+      builder->CreateCall(F, {out, operand});
+      return out;
     } else if (op == PostfixOpNode::INVERSE) {
       llvm::Function *F = module->getFunction("zorn_inverse");
       if (!F) {
         llvm::FunctionType *FT = llvm::FunctionType::get(
-            llvm::PointerType::getUnqual(*context),
-            {llvm::PointerType::getUnqual(*context)}, false);
+            llvm::Type::getVoidTy(*context),
+            {llvm::PointerType::getUnqual(*context), llvm::PointerType::getUnqual(*context)}, false);
         F = llvm::Function::Create(FT, llvm::Function::ExternalLinkage,
                                    "zorn_inverse", module.get());
       }
-      return builder->CreateCall(F, {operand});
+      llvm::Value *out = allocate_tensor_on_stack(node->type, "tensor_trans_inv");
+      builder->CreateCall(F, {out, operand});
+      return out;
     } else if (op == PostfixOpNode::DOT) {
       llvm::Function *F = module->getFunction("zorn_tensor_shape");
       if (!F) {
         llvm::FunctionType *FT = llvm::FunctionType::get(
-            llvm::PointerType::getUnqual(*context),
-            {llvm::PointerType::getUnqual(*context)}, false);
+            llvm::Type::getVoidTy(*context),
+            {llvm::PointerType::getUnqual(*context), llvm::PointerType::getUnqual(*context)}, false);
         F = llvm::Function::Create(FT, llvm::Function::ExternalLinkage,
                                    "zorn_tensor_shape", module.get());
       }
-      return builder->CreateCall(F, {operand});
+      llvm::Value *out = allocate_tensor_on_stack(node->type, "tensor_trans_inv");
+      builder->CreateCall(F, {out, operand});
+      return out;
     }
   }
   return nullptr;
@@ -971,7 +1010,14 @@ llvm::Value *CodeGen::visit_for_stmt(AST *node) {
           llvm::PointerType::getUnqual(*context), {llvm::PointerType::getUnqual(*context)}, false);
       shapeF = llvm::Function::Create(FT, llvm::Function::ExternalLinkage, "zorn_tensor_shape", module.get());
     }
-    llvm::Value *shape_tensor = builder->CreateCall(shapeF, {tensor_val});
+    
+    Type shape_type;
+    shape_type.type_node = TypeNode::VECTOR;
+    shape_type.base_type = TypeNode::INT;
+    
+    shape_type.sizes.push_back(iter_node->type.sizes.size());
+    llvm::Value *shape_tensor = allocate_tensor_on_stack(shape_type, "shape_out");
+    builder->CreateCall(shapeF, {shape_tensor, tensor_val});
     llvm::Value *one_val = llvm::ConstantInt::get(*context, llvm::APInt(64, 1, true));
     llvm::Value *zero_val = llvm::ConstantInt::get(*context, llvm::APInt(64, 0, true));
     llvm::AllocaInst *idx_arr = builder->CreateAlloca(llvm::Type::getInt64Ty(*context), one_val);
