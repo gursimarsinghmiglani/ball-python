@@ -35,10 +35,11 @@ print_stmt ::= ( PRINT | PRINTLN ) ( expr | STRING_LIT ) SEMI
 
 expr_stmt ::= expr SEMI
 
-type ::= base_type
-       | VECTOR LESS base_type COMMA INT_LIT GREATER
-       | MATRIX LESS base_type COMMA INT_LIT COMMA INT_LIT GREATER
-       | TENSOR LESS base_type COMMA INT_LIT COMMA INT_LIT COMMA int_list GREATER
+type ::= base_type | container_type
+
+container_type ::= VECTOR LESS base_type COMMA INT_LIT GREATER
+                 | MATRIX LESS base_type COMMA INT_LIT COMMA INT_LIT GREATER
+                 | TENSOR LESS base_type COMMA INT_LIT COMMA INT_LIT COMMA int_list GREATER
 
 int_list ::= INT_LIT { COMMA INT_LIT }
 
@@ -66,7 +67,7 @@ relational_expr ::= additive_expr { ( LESS | LEQ | GREATER | GEQ ) additive_expr
 
 additive_expr ::= multiplicative_expr { ( PLUS | MINUS ) multiplicative_expr }
 
-multiplicative_expr ::= unary_expr { ( MUL | DIV | MAT_MUL ) unary_expr }
+multiplicative_expr ::= unary_expr { ( MUL | DIV | MOD | MAT_MUL ) unary_expr }
 
 unary_expr ::= ( PLUS | MINUS | NOT | BITWISE_NOT ) unary_expr 
              | postfix_expr
@@ -84,6 +85,6 @@ primary_expr ::= INT_LIT
                | ID
                | LPAREN expr RPAREN
                | LBRACKET [ expr_list ] RBRACKET
-               | ( VECTOR | MATRIX | TENSOR ) LESS base_type ... LPAREN expr RPAREN
+               | container_type LPAREN expr RPAREN
 
 expr_list ::= expr { COMMA expr }
