@@ -1,8 +1,0 @@
-[
-{
-  "directory": "/Users/gursimarsinghmiglani/zorn/build",
-  "command": "/usr/bin/c++  -I/Users/gursimarsinghmiglani/zorn/src -I/Users/gursimarsinghmiglani/zorn/include -isystem /opt/homebrew/Cellar/llvm/22.1.3/include -isystem /opt/homebrew/include -std=c++17 -arch arm64   -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -o CMakeFiles/ZornCompiler.dir/src/main.cpp.o -c /Users/gursimarsinghmiglani/zorn/src/main.cpp",
-  "file": "/Users/gursimarsinghmiglani/zorn/src/main.cpp",
-  "output": "CMakeFiles/ZornCompiler.dir/src/main.cpp.o"
-}
-]

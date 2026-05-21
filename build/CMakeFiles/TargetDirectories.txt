@@ -1,8 +1,0 @@
-/Users/gursimarsinghmiglani/zorn/build/CMakeFiles/intrinsics_gen.dir
-/Users/gursimarsinghmiglani/zorn/build/CMakeFiles/vt_gen.dir
-/Users/gursimarsinghmiglani/zorn/build/CMakeFiles/omp_gen.dir
-/Users/gursimarsinghmiglani/zorn/build/CMakeFiles/acc_gen.dir
-/Users/gursimarsinghmiglani/zorn/build/CMakeFiles/target_parser_gen.dir
-/Users/gursimarsinghmiglani/zorn/build/CMakeFiles/ZornCompiler.dir
-/Users/gursimarsinghmiglani/zorn/build/CMakeFiles/edit_cache.dir
-/Users/gursimarsinghmiglani/zorn/build/CMakeFiles/rebuild_cache.dir

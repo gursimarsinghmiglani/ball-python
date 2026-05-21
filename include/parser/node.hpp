@@ -24,5 +24,7 @@ enum class Node {
   FLOAT_LIT,
   BOOL,
   ID,
-  TENSOR_LIT
+  TENSOR_LIT,
+  STRING_LIT,
+  TENSOR_INIT
 };

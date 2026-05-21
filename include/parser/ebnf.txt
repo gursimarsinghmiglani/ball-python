@@ -9,7 +9,7 @@ const_decl ::= CONST ID [ COLON type ] ASSIGN expr SEMI
 function_decl ::= FN ID LPAREN [ param_list ] RPAREN [ ARROW type ] block
 
 param_list ::= param { COMMA param }
-param ::= ID COLON type
+param ::= ID COLON [ CONST ] type
 
 block ::= LBRACE { statement } RBRACE
 
@@ -31,7 +31,7 @@ for_stmt ::= FOR ID IN expr block
 
 return_stmt ::= RETURN [ expr ] SEMI
 
-print_stmt ::= ( PRINT | PRINTLN ) expr SEMI
+print_stmt ::= ( PRINT | PRINTLN ) ( expr | STRING_LIT ) SEMI
 
 expr_stmt ::= expr SEMI
 
@@ -66,22 +66,24 @@ relational_expr ::= additive_expr { ( LESS | LEQ | GREATER | GEQ ) additive_expr
 
 additive_expr ::= multiplicative_expr { ( PLUS | MINUS ) multiplicative_expr }
 
-multiplicative_expr ::= unary_expr { ( MUL | DIV | DOT_MUL | DOT_DIV ) unary_expr }
+multiplicative_expr ::= unary_expr { ( MUL | DIV | MAT_MUL ) unary_expr }
 
 unary_expr ::= ( PLUS | MINUS | NOT | BITWISE_NOT ) unary_expr 
              | postfix_expr
 
 postfix_expr ::= primary_expr { LBRACKET expr_list RBRACKET 
                               | LPAREN [ expr_list ] RPAREN 
-                              | DOT SIZE
+                              | DOT ( SIZE | INV )
                               | TRANSPOSE }
 
 primary_expr ::= INT_LIT
                | FLOAT_LIT
+               | STRING_LIT
                | TRUE
                | FALSE
                | ID
                | LPAREN expr RPAREN
                | LBRACKET [ expr_list ] RBRACKET
+               | ( VECTOR | MATRIX | TENSOR ) LESS base_type ... LPAREN expr RPAREN
 
 expr_list ::= expr { COMMA expr }

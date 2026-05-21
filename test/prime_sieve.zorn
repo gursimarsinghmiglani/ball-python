@@ -1,0 +1,16 @@
+const N = 100;
+fn print_primes() {
+  let v = vector<bool, 101>(true);
+  for i in range(2, N + 1) {
+    if v[i] {
+      print i;
+      print " ";
+      for j in range(2 * i, N + 1, i) {
+        v[j] = false;
+      }
+    }
+  }
+}
+fn main() {
+  print_primes();
+}

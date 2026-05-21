@@ -1,0 +1,1 @@
+fn push_queue(q: vector<int, 10>, left: int, right: int, x: int) -> vector<int, 2>{

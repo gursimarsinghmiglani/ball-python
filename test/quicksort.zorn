@@ -1,0 +1,34 @@
+fn partition(v: vector<int, 15>, lo: int, hi: int) -> int {
+  let j = lo;
+  for i in range(lo + 1, hi) {
+    if v[i] <= v[lo] {
+      let temp = v[j + 1];
+      v[j + 1] = v[i];
+      v[i] = temp;
+      j = j + 1;
+    }
+  }
+  let temp = v[lo];
+  v[lo] = v[j];
+  v[j] = temp;
+  return j;
+}
+fn quicksort_helper(v: vector<int, 15>, lo: int, hi: int) {
+  if lo == hi {
+    return;
+  }
+  let j = partition(v, lo, hi);
+  quicksort_helper(v, lo, j);
+  quicksort_helper(v, j + 1, hi);
+}
+fn quicksort(v: vector<int, 15>) {
+  quicksort_helper(v, 0, 15);
+}
+fn main() {
+  let v: vector<int, 15> = [4, 2, 5, 1, 6, 4, 4, 2, 6, 1, 7, 19, 12, -1, 13];
+  quicksort(v);
+  for x in v {
+    print x;
+    print " ";
+  }
+}

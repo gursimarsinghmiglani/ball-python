@@ -30,8 +30,9 @@
   X(TOK_MINUS)                                                                 \
   X(TOK_MUL)                                                                   \
   X(TOK_DIV)                                                                   \
-  X(TOK_DOT_MUL)                                                               \
-  X(TOK_DOT_DIV)                                                               \
+  X(TOK_MOD)                                                                   \
+  X(TOK_MAT_MUL)                                                               \
+  X(TOK_MAT_INV)                                                               \
   X(TOK_EQ)                                                                    \
   X(TOK_NEQ)                                                                   \
   X(TOK_LESS)                                                                  \
@@ -61,7 +62,8 @@
   X(TOK_ID)                                                                    \
   X(TOK_EOF)                                                                   \
   X(TOK_FINAL_PLACEHOLDER)                                                     \
-  X(TOK_ERROR)
+  X(TOK_ERROR)                                                                 \
+  X(TOK_STRING_LIT)
 #define X(name) name,
 enum class Token { TOKEN_LIST };
 #undef X

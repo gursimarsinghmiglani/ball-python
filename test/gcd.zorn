@@ -1,0 +1,13 @@
+fn gcd(x: int, y: int) -> int {
+  while y > 0 {
+    let temp = x;
+    x = y;
+    y = temp % y;
+  }
+  return x;
+}
+fn main() {
+  let x = 30;
+  let y = 70;
+  print gcd(x, y);
+}

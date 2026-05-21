@@ -12,16 +12,15 @@ struct SymbolInfo {
   bool is_const;
   bool is_function;
   std::vector<Type> param_types;
-  llvm::Value *llvm_memory_address;
+  llvm::Value *llvm_value;
   SymbolInfo()
       : type(Type::from_type_node(TypeNode::INT)), is_const(false),
-        is_function(false), llvm_memory_address(nullptr) {}
+        is_function(false), llvm_value(nullptr) {}
   SymbolInfo(Type t, bool is_const)
-      : type(t), is_const(is_const), is_function(false),
-        llvm_memory_address(nullptr) {}
+      : type(t), is_const(is_const), is_function(false), llvm_value(nullptr) {}
   SymbolInfo(Type ret_type, std::vector<Type> param_types)
       : type(ret_type), is_const(false), is_function(true),
-        param_types(param_types), llvm_memory_address(nullptr) {}
+        param_types(param_types), llvm_value(nullptr) {}
 };
 struct SymbolTable {
   std::vector<std::unordered_map<std::string, SymbolInfo>> scopes;

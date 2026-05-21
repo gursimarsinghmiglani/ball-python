@@ -9,7 +9,7 @@ struct Parser {
   Token tok() const { return peek().tok; }
   [[noreturn]] void error_function() const {
     std::cerr << "Parsing error in line " << peek().line_number
-              << " at position " << pos << "\n";
+              << " at position " << peek().col << "\n";
     std::exit(1);
   }
   bool check(Token t) const { return tok() == t; }
@@ -293,6 +293,7 @@ inline std::unique_ptr<AST> Parser::parse_equality_expr() {
     if (match(Token::TOK_EQ)) {
       ast->v = EqualityOpNode::EQ;
     } else {
+      advance();
       ast->v = EqualityOpNode::NEQ;
     }
     auto right = parse_relational_expr();
@@ -356,17 +357,18 @@ inline std::unique_ptr<AST> Parser::parse_additive_expr() {
 inline std::unique_ptr<AST> Parser::parse_multiplicative_expr() {
   auto left = parse_unary_expr();
   while (check(Token::TOK_MUL) || check(Token::TOK_DIV) ||
-         check(Token::TOK_DOT_MUL) || check(Token::TOK_DOT_DIV)) {
+         check(Token::TOK_MOD) || check(Token::TOK_MAT_MUL)) {
     auto ast = std::make_unique<AST>();
     ast->lexeme = peek();
     if (match(Token::TOK_MUL)) {
       ast->v = MultiplicativeOpNode::MUL;
     } else if (match(Token::TOK_DIV)) {
       ast->v = MultiplicativeOpNode::DIV;
-    } else if (match(Token::TOK_DOT_MUL)) {
-      ast->v = MultiplicativeOpNode::DOT_MUL;
+    } else if (match(Token::TOK_MOD)) {
+      ast->v = MultiplicativeOpNode::MOD;
     } else {
-      ast->v = MultiplicativeOpNode::DOT_DIV;
+      advance();
+      ast->v = MultiplicativeOpNode::MAT_MUL;
     }
     auto right = parse_unary_expr();
     ast->node = Node::BINARY_OP;
@@ -423,9 +425,13 @@ inline std::unique_ptr<AST> Parser::parse_postfix_expr() {
         consume(Token::TOK_RPAREN);
       }
     } else if (match(Token::TOK_DOT)) {
-      ast->v = PostfixOpNode::DOT;
       ast->children.push_back(std::move(left));
-      consume(Token::TOK_SIZE);
+      if (match(Token::TOK_SIZE)) {
+        ast->v = PostfixOpNode::DOT;
+      } else {
+        consume(Token::TOK_MAT_INV);
+        ast->v = PostfixOpNode::INVERSE;
+      }
     } else if (match(Token::TOK_TRANSPOSE)) {
       ast->v = PostfixOpNode::TRANSPOSE;
       ast->children.push_back(std::move(left));
@@ -458,6 +464,11 @@ inline std::unique_ptr<AST> Parser::parse_primary_expr() {
     ast->v = false;
     ast->lexeme = peek();
     advance();
+  } else if (check(Token::TOK_STRING_LIT)) {
+    ast->node = Node::STRING_LIT;
+    ast->v = peek().s;
+    ast->lexeme = peek();
+    advance();
   } else if (check(Token::TOK_ID)) {
     ast->node = Node::ID;
     ast->v = peek().s;
@@ -472,6 +483,12 @@ inline std::unique_ptr<AST> Parser::parse_primary_expr() {
       fill_expr_list(ast);
       consume(Token::TOK_RBRACKET);
     }
+  } else if (check(Token::TOK_VECTOR) || check(Token::TOK_MATRIX) || check(Token::TOK_TENSOR)) {
+    ast->node = Node::TENSOR_INIT;
+    ast->children.push_back(parse_type());
+    consume(Token::TOK_LPAREN);
+    ast->children.push_back(parse_expr());
+    consume(Token::TOK_RPAREN);
   } else {
     error_function();
   }
@@ -529,7 +546,14 @@ inline std::unique_ptr<AST> Parser::parse_param() {
   ast->node = Node::PARAM;
   ast->children.push_back(parse_id());
   consume(Token::TOK_COLON);
+  bool is_const = false;
+  if (match(Token::TOK_CONST)) {
+    is_const = true;
+  }
   ast->children.push_back(parse_type());
+  if (is_const) {
+    ast->children.back()->type.is_const = true;
+  }
   ast->lexeme = ast->children[0]->lexeme;
   return ast;
 }
@@ -594,7 +618,6 @@ inline std::unique_ptr<AST> Parser::parse_if_stmt() {
 inline std::unique_ptr<AST> Parser::parse_while_stmt() {
   auto ast = std::make_unique<AST>();
   ast->lexeme = peek();
-
   consume(Token::TOK_WHILE);
   ast->node = Node::WHILE_STMT;
   ast->children.push_back(parse_expr());
@@ -633,7 +656,16 @@ inline std::unique_ptr<AST> Parser::parse_print_stmt() {
     consume(Token::TOK_PRINTLN);
     ast->v = PrintNode::PRINTLN;
   }
-  ast->children.push_back(parse_expr());
+  if (check(Token::TOK_STRING_LIT)) {
+    auto str_ast = std::make_unique<AST>();
+    str_ast->node = Node::STRING_LIT;
+    str_ast->v = peek().s;
+    str_ast->lexeme = peek();
+    advance();
+    ast->children.push_back(std::move(str_ast));
+  } else {
+    ast->children.push_back(parse_expr());
+  }
   consume(Token::TOK_SEMI);
   return ast;
 }

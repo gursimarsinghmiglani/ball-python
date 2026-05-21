@@ -9,116 +9,157 @@ struct SemanticAnalyzer {
   SemanticAnalyzer(AST *const root) : st(std::make_unique<SymbolTable>()) {
     visit_program(root);
   }
-  void invalid_variable_declaration_error(AST *const root) {
+  [[noreturn]] void mismatched_dimensions_error(AST *const root) {
+    std::cerr << "Mismatched dimensions error in line "
+              << root->lexeme.line_number << " at position " << root->lexeme.col
+              << "\n";
+    exit(1);
+  }
+  [[noreturn]] void invalid_range_expr(AST *const root) {
+    std::cerr << "Error: Invalid range expression in line "
+              << root->lexeme.line_number << " at position " << root->lexeme.col
+              << "\n";
+    exit(1);
+  }
+  [[noreturn]] void invalid_matrix_dimensions_error(AST *const root) {
+    std::cerr << "Error: Matrix to be inversed must be square; Line "
+              << root->lexeme.line_number << ", Position " << root->lexeme.col
+              << "\n";
+    exit(1);
+  }
+  [[noreturn]] void invalid_matrix_inverse_argument_error(AST *const root) {
+    std::cerr << "Error: Argument to matrix inverse must be a matrix; Line "
+              << root->lexeme.line_number << ", Position " << root->lexeme.col
+              << "\n";
+    exit(1);
+  }
+  [[noreturn]] void duplicate_parameter_name_error(AST *const root) {
+    std::cerr << "Error: Duplicate parameter name in line "
+              << root->lexeme.line_number << " at position " << root->lexeme.col
+              << "\n";
+    exit(1);
+  }
+  [[noreturn]] void function_already_defined_error(AST *const root) {
+    std::cerr << "Error: Function in line " << root->lexeme.line_number
+              << " at position " << root->lexeme.col << " already defined\n";
+    exit(1);
+  }
+  [[noreturn]] void invalid_variable_declaration_error(AST *const root) {
     std::cerr << "Invalid variable declaration in line "
-              << root->lexeme.line_number << " at position "
-              << root->lexeme.start << ": Variable already declared";
+              << root->lexeme.line_number << " at position " << root->lexeme.col
+              << ": Variable already declared\n";
     exit(1);
   }
-  void invalid_if_stmt_predicate_error(AST *const root) {
+  [[noreturn]] void invalid_if_stmt_predicate_error(AST *const root) {
     std::cerr << "Invalid predicate in if statement in line "
-              << root->lexeme.line_number << " at position "
-              << root->lexeme.start;
+              << root->lexeme.line_number << " at position " << root->lexeme.col
+              << "\n";
     exit(1);
   }
-  void invalid_while_loop_predicate_error(AST *const root) {
+  [[noreturn]] void invalid_while_loop_predicate_error(AST *const root) {
     std::cerr << "Invalid predicate in while loop in line "
-              << root->lexeme.line_number << " at position "
-              << root->lexeme.start;
+              << root->lexeme.line_number << " at position " << root->lexeme.col
+              << "\n";
     exit(1);
   }
-  void invalid_const_definition_error(AST *const root) {
+  [[noreturn]] void invalid_const_definition_error(AST *const root) {
     std::cerr << "Invalid const definition in line " << root->lexeme.line_number
-              << " at position " << root->lexeme.start
-              << ": Const variable already defined";
+              << " at position " << root->lexeme.col
+              << ": Const variable already defined\n";
     exit(1);
   }
-  void invalid_print_argument_error(AST *const root) {
+  [[noreturn]] void invalid_print_argument_error(AST *const root) {
     std::cerr << "Invalid print argument error in line "
-              << root->lexeme.line_number << " at position "
-              << root->lexeme.start;
+              << root->lexeme.line_number << " at position " << root->lexeme.col
+              << "\n";
     exit(1);
   }
-  void variable_not_declared_error(AST *const root) {
+  [[noreturn]] void variable_not_declared_error(AST *const root) {
     std::cerr << "Variable not found error in line " << root->lexeme.line_number
-              << "at position " << root->lexeme.start;
+              << "at position " << root->lexeme.col << "\n";
     exit(1);
   }
-  void error(AST *const root) {
+  [[noreturn]] void error(AST *const root) {
     std::cerr << "Semantic error in line " << root->lexeme.line_number
-              << " at position " << root->lexeme.start;
+              << " at position " << root->lexeme.col << "\n";
     exit(1);
   }
   [[noreturn]] void const_assign_error(AST *const root) {
     std::cerr << "Invalid assignment error in line " << root->lexeme.line_number
-              << " at position " << root->lexeme.start
-              << ": Can't asssign to const variable";
+              << " at position " << root->lexeme.col
+              << ": Can't asssign to const variable\n";
     exit(1);
   }
   [[noreturn]] void transpose_error(AST *const root) {
     std::cerr << "Invalid transpose error in line " << root->lexeme.line_number
-              << " at position " << root->lexeme.start
-              << ": Object to be transposed must be a matrix";
+              << " at position " << root->lexeme.col
+              << ": Object to be transposed must be a matrix\n";
     exit(1);
   }
   [[noreturn]] void type_error(AST *const root) {
     std::cerr << "Type mismatch error in line " << root->lexeme.line_number
-              << " at position " << root->lexeme.start;
+              << " at position " << root->lexeme.col << "\n";
     exit(1);
   }
   [[noreturn]] void invalid_assignment_error(AST *const root) {
     std::cerr << "Invalid assignment error in line " << root->lexeme.line_number
-              << " at position " << root->lexeme.start
-              << ": Value assigned to must be an l-value";
+              << " at position " << root->lexeme.col
+              << ": Value assigned to must be an l-value\n";
     exit(1);
   }
   [[noreturn]] void index_error(AST *const root) {
     std::cerr << "Index error in line " << root->lexeme.line_number
-              << " at position " << root->lexeme.start;
+              << " at position " << root->lexeme.col << "\n";
     exit(1);
   }
   [[noreturn]] void invalid_index_error(AST *const root) {
     std::cerr << "Invalid index error in line " << root->lexeme.line_number
-              << " at position " << root->lexeme.start;
+              << " at position " << root->lexeme.col << "\n";
     exit(1);
   }
   [[noreturn]] void argument_count_mismatch_error(AST *const root) {
     std::cerr << "Argument count mismatch error in line "
-              << root->lexeme.line_number << " at position "
-              << root->lexeme.start;
+              << root->lexeme.line_number << " at position " << root->lexeme.col
+              << "\n";
     exit(1);
   }
   [[noreturn]] void argument_type_mismatch_error(AST *const root) {
     std::cerr << "Argument type mismatch error in line "
-              << root->lexeme.line_number << " at position "
-              << root->lexeme.start;
+              << root->lexeme.line_number << " at position " << root->lexeme.col
+              << "\n";
     exit(1);
   }
   [[noreturn]] void invalid_function_call_error(AST *const root) {
     std::cerr << "Invalid function call in line " << root->lexeme.line_number
-              << " at position " << root->lexeme.start;
+              << " at position " << root->lexeme.col << "\n";
     exit(1);
   }
   [[noreturn]] void undeclared_function_call_error(AST *const root) {
     std::cerr << "Undeclared function call in line " << root->lexeme.line_number
-              << " at position " << root->lexeme.start;
+              << " at position " << root->lexeme.col << "\n";
     exit(1);
   }
   [[noreturn]] void function_ret_type_error(AST *const root) {
     std::cerr << "Function return type mismatch error in line "
-              << root->lexeme.line_number << " at position "
-              << root->lexeme.start;
+              << root->lexeme.line_number << " at position " << root->lexeme.col
+              << "\n";
     exit(1);
   }
   [[noreturn]] void symbol_not_found_error(AST *const root) {
     std::cerr << "Symbol not found in line " << root->lexeme.line_number
-              << " at position " << root->lexeme.start;
+              << " at position " << root->lexeme.col << "\n";
     exit(1);
   }
   [[noreturn]] void invalid_tensor_declaration_error(AST *const root) {
     std::cerr << "Invalid tensor declaration in line "
-              << root->lexeme.line_number << " at position "
-              << root->lexeme.start;
+              << root->lexeme.line_number << " at position " << root->lexeme.col
+              << "\n";
+    exit(1);
+  }
+  [[noreturn]] void control_paths_error(AST *const root) {
+    std::cerr << "Semantic error in line " << root->lexeme.line_number
+              << " at position " << root->lexeme.col
+              << ": Not all control paths return a value\n";
     exit(1);
   }
   void visit_program(AST *const node);
@@ -192,7 +233,7 @@ inline void SemanticAnalyzer::visit_var_decl(AST *const node) {
     visit_expr(node->children[1].get());
     type = node->children[1]->type;
   }
-  if (type.is_null || type.type_node == TypeNode::VOID) {
+  if (type.is_null) {
     type_error(node);
   }
   node->type = type;
@@ -223,7 +264,11 @@ inline void SemanticAnalyzer::visit_assign_expr(AST *const node) {
       invalid_assignment_error(node);
     }
     if (is_id) {
-      if (st->lookup(std::get<std::string>(node->children[0]->v))->is_const) {
+      auto sym_info = st->lookup(std::get<std::string>(node->children[0]->v));
+      if (!sym_info) {
+        variable_not_declared_error(node);
+      }
+      if (sym_info->is_const) {
         const_assign_error(node);
       }
     }
@@ -233,7 +278,11 @@ inline void SemanticAnalyzer::visit_assign_expr(AST *const node) {
         invalid_assignment_error(node);
       }
       std::string base_name = std::get<std::string>(curr->v);
-      if (st->lookup(base_name)->is_const) {
+      auto base_sym_info = st->lookup(base_name);
+      if (!base_sym_info) {
+        variable_not_declared_error(node);
+      }
+      if (base_sym_info->is_const) {
         const_assign_error(node);
       }
     }
@@ -252,16 +301,16 @@ inline void SemanticAnalyzer::visit_assign_expr(AST *const node) {
 inline void SemanticAnalyzer::visit_range_expr(AST *const node) {
   if (node->node == Node::RANGE) {
     visit_expr(node->children[0].get());
-    if (node->children[0]->type != Type::from_type_node(TypeNode::INT)) {
+    if (node->children[0]->type.type_node != TypeNode::INT) {
       type_error(node);
     }
     visit_expr(node->children[1].get());
-    if (node->children[1]->type != Type::from_type_node(TypeNode::INT)) {
+    if (node->children[1]->type.type_node != TypeNode::INT) {
       type_error(node);
     }
     if (node->children.size() > 2) {
       visit_expr(node->children[2].get());
-      if (node->children[2]->type != Type::from_type_node(TypeNode::INT)) {
+      if (node->children[2]->type.type_node != TypeNode::INT) {
         type_error(node);
       }
     }
@@ -430,22 +479,29 @@ inline void SemanticAnalyzer::visit_multiplicative_expr(AST *const node) {
     visit_multiplicative_expr(node->children[1].get());
     Type left = node->children[0]->type;
     Type right = node->children[1]->type;
-    Type type = super_type_unify(left, right);
-    if (type.is_null) {
-      type_error(node);
-    }
     if (std::get<MultiplicativeOpNode>(node->v) ==
-            MultiplicativeOpNode::DOT_MUL ||
-        std::get<MultiplicativeOpNode>(node->v) ==
-            MultiplicativeOpNode::DOT_DIV) {
-      switch (type.type_node) {
-      case TypeNode::BOOL:
-      case TypeNode::INT:
-      case TypeNode::FLOAT:
-        return type_error(node);
+        MultiplicativeOpNode::MAT_MUL) {
+      if (left.type_node != TypeNode::MATRIX ||
+          right.type_node != TypeNode::MATRIX) {
+        type_error(node);
       }
+      Type base = super_base_type_node_unify(left.base_type, right.base_type);
+      if (base.is_null) {
+        type_error(node);
+      }
+      if (left.sizes[1] != right.sizes[0]) {
+        mismatched_dimensions_error(node);
+      }
+      node->type = Type::from_type_node(TypeNode::MATRIX);
+      node->type.base_type = base.type_node;
+      node->type.sizes = {left.sizes[0], right.sizes[1]};
+    } else {
+      Type type = super_type_unify(left, right);
+      if (type.is_null) {
+        type_error(node);
+      }
+      node->type = type;
     }
-    node->type = type;
   } else {
     visit_unary_expr(node);
   }
@@ -498,7 +554,7 @@ inline void SemanticAnalyzer::visit_postfix_expr(AST *const node) {
         }
         for (int i = 1; i < node->children.size(); i++) {
           visit_expr(node->children[i].get());
-          if (node->children[i]->type != Type::from_type_node(TypeNode::INT)) {
+          if (node->children[i]->type.type_node != TypeNode::INT) {
             invalid_index_error(node->children[i].get());
           }
         }
@@ -540,7 +596,7 @@ inline void SemanticAnalyzer::visit_postfix_expr(AST *const node) {
             static_cast<int64_t>(node->children[0]->type.sizes.size())};
       }
       break;
-    default:
+    case PostfixOpNode::TRANSPOSE:
       switch (node->children[0]->type.type_node) {
       case TypeNode::MATRIX:
         node->type = node->children[0]->type;
@@ -549,6 +605,19 @@ inline void SemanticAnalyzer::visit_postfix_expr(AST *const node) {
         break;
       default:
         transpose_error(node);
+      }
+      break;
+    default:
+      switch (node->children[0]->type.type_node) {
+      case TypeNode::MATRIX:
+        if (node->children[0]->type.sizes[0] !=
+            node->children[0]->type.sizes[1]) {
+          invalid_matrix_dimensions_error(node);
+        }
+        node->type = node->children[0]->type;
+        break;
+      default:
+        invalid_matrix_inverse_argument_error(node);
       }
     }
   } else {
@@ -566,6 +635,9 @@ inline void SemanticAnalyzer::visit_primary_expr(AST *const node) {
   case Node::BOOL:
     node->type = Type::from_type_node(TypeNode::BOOL);
     break;
+  case Node::STRING_LIT:
+    node->type = Type::from_type_node(TypeNode::STRING);
+    break;
   case Node::ID: {
     auto ptr = st->lookup(std::get<std::string>(node->v));
     if (ptr) {
@@ -573,6 +645,26 @@ inline void SemanticAnalyzer::visit_primary_expr(AST *const node) {
     } else {
       symbol_not_found_error(node);
     }
+    break;
+  }
+  case Node::BINARY_OP:
+  case Node::UNARY_OP:
+  case Node::POSTFIX_OP:
+  case Node::FN_CALL:
+  case Node::RANGE:
+  case Node::ASSIGN:
+    visit_expr(node);
+    break;
+  case Node::TENSOR_INIT: {
+    Type target_type = node->children[0]->type;
+    visit_expr(node->children[1].get());
+    Type default_val_type = node->children[1]->type;
+    Type base_as_type = Type::from_type_node(target_type.base_type);
+    Type unified = type_unify(base_as_type, default_val_type);
+    if (unified.is_null) {
+      type_error(node);
+    }
+    node->type = target_type;
     break;
   }
   default:
@@ -641,6 +733,8 @@ inline void SemanticAnalyzer::visit_const_decl(AST *const node) {
   if (type.is_null || type.type_node == TypeNode::VOID) {
     type_error(node);
   }
+  type.is_const = true;
+  node->type = type;
   SymbolInfo sym_info(type, true);
   bool success = st->declare(id, sym_info);
   if (!success) {
@@ -674,19 +768,32 @@ inline void SemanticAnalyzer::visit_param(AST *const node) {
   node->type = node->children[1]->type;
 }
 inline void SemanticAnalyzer::visit_function_decl(AST *const node) {
-  st->enter_scope();
   std::string fn_name = std::get<std::string>(node->children[0]->v);
   std::vector<Type> param_types;
   Type ret_type = Type::from_type_node(TypeNode::VOID);
   for (int i = 1; i < node->children.size() - 1; i++) {
     if (node->children[i]->node == Node::PARAM) {
-      Type param_type = node->children[i]->children[1]->type;
-      param_types.push_back(param_type);
-      SymbolInfo sym_info(param_type, false);
-      st->declare(std::get<std::string>(node->children[i]->children[0]->v),
-                  sym_info);
+      param_types.push_back(node->children[i]->children[1]->type);
     } else {
       ret_type = node->children[i]->type;
+    }
+  }
+  SymbolInfo sym_info(ret_type, param_types);
+  bool success = st->declare(fn_name, sym_info);
+  if (!success) {
+    function_already_defined_error(node);
+  }
+  st->enter_scope();
+  for (int i = 1; i < node->children.size() - 1; i++) {
+    if (node->children[i]->node == Node::PARAM) {
+      SymbolInfo param_sym_info(node->children[i]->children[1]->type,
+                                node->children[i]->children[1]->type.is_const);
+      bool success =
+          st->declare(std::get<std::string>(node->children[i]->children[0]->v),
+                      param_sym_info);
+      if (!success) {
+        duplicate_parameter_name_error(node->children[i].get());
+      }
     }
   }
   visit_block(node->children[node->children.size() - 1].get());
@@ -695,16 +802,14 @@ inline void SemanticAnalyzer::visit_function_decl(AST *const node) {
   if (t.is_null) {
     function_ret_type_error(node);
   }
-  SymbolInfo sym_info(ret_type, param_types);
   st->exit_scope();
-  st->declare(fn_name, sym_info);
 }
 inline void SemanticAnalyzer::visit_block(AST *const node) {
   if (node->node == Node::RETURN_STMT) {
     visit_return_stmt(node);
-    node->ret_type = node->type;
     return;
   }
+  bool definitely_returns = false;
   Type ret_type = Type::from_type_node(TypeNode::VOID);
   for (const auto &child : node->children) {
     switch (child->node) {
@@ -737,28 +842,56 @@ inline void SemanticAnalyzer::visit_block(AST *const node) {
       visit_block(child.get());
       st->exit_scope();
     }
-    if (ret_type.type_node == TypeNode::VOID) {
+    if (child->ret_type.is_null) {
+    } else if (ret_type.type_node == TypeNode::VOID) {
       ret_type = child->ret_type;
     } else if (child->ret_type.type_node != TypeNode::VOID) {
       ret_type = super_type_unify(ret_type, child->ret_type);
+    }
+    if (ret_type.is_null) {
+      function_ret_type_error(node);
+    }
+    if (!definitely_returns && check_returns(child.get())) {
+      node->ret_type = ret_type;
+      definitely_returns = true;
+    }
+  }
+  if (!definitely_returns) {
+    if (ret_type.type_node != TypeNode::VOID) {
+      control_paths_error(node);
     }
     node->ret_type = ret_type;
   }
 }
 inline void SemanticAnalyzer::visit_if_stmt(AST *const node) {
-  st->enter_scope();
   visit_expr(node->children[0].get());
   Type type =
       type_unify(Type::from_type_node(TypeNode::BOOL), node->children[0]->type);
   if (type.is_null) {
-    invalid_if_stmt_predicate_error(node);
+    invalid_if_stmt_predicate_error(node->children[0].get());
   }
   node->children[0]->type = type;
+  st->enter_scope();
   visit_block(node->children[1].get());
   st->exit_scope();
+  Type ret_type = node->children[1]->ret_type;
+  if (node->children.size() == 3) {
+    st->enter_scope();
+    visit_block(node->children[2].get());
+    st->exit_scope();
+    Type else_ret_type = node->children[2]->ret_type;
+    if (ret_type.type_node == TypeNode::VOID) {
+      ret_type = else_ret_type;
+    } else if (else_ret_type.type_node != TypeNode::VOID) {
+      ret_type = super_type_unify(ret_type, else_ret_type);
+    }
+    if (ret_type.is_null) {
+      function_ret_type_error(node);
+    }
+  }
+  node->ret_type = ret_type;
 }
 inline void SemanticAnalyzer::visit_while_stmt(AST *const node) {
-  st->enter_scope();
   visit_expr(node->children[0].get());
   Type type =
       type_unify(Type::from_type_node(TypeNode::BOOL), node->children[0]->type);
@@ -766,18 +899,24 @@ inline void SemanticAnalyzer::visit_while_stmt(AST *const node) {
     invalid_while_loop_predicate_error(node);
   }
   node->children[0]->type = type;
+  st->enter_scope();
   visit_block(node->children[1].get());
   st->exit_scope();
+  node->ret_type = node->children[1]->type;
 }
 inline void SemanticAnalyzer::visit_for_stmt(AST *const node) {
   st->enter_scope();
   auto var_name = std::get<std::string>(node->children[0]->v);
   visit_expr(node->children[1].get());
+  if (node->children[1]->type.type_node != TypeNode::VECTOR) {
+    invalid_range_expr(node->children[1].get());
+  }
   auto var_type = Type::from_type_node(node->children[1]->type.base_type);
   SymbolInfo sym_info(var_type, false);
   st->declare(var_name, sym_info);
   visit_block(node->children[2].get());
   st->exit_scope();
+  node->ret_type = node->children[2]->type;
 }
 inline void SemanticAnalyzer::visit_return_stmt(AST *const node) {
   if (node->children.size() == 1) {
@@ -786,8 +925,13 @@ inline void SemanticAnalyzer::visit_return_stmt(AST *const node) {
   } else {
     node->type = Type::from_type_node(TypeNode::VOID);
   }
+  node->ret_type = node->type;
 }
 inline void SemanticAnalyzer::visit_print_stmt(AST *const node) {
+  if (node->children[0]->node == Node::STRING_LIT) {
+    node->children[0]->type = Type::from_type_node(TypeNode::STRING);
+    return;
+  }
   visit_expr(node->children[0].get());
   if (node->children[0]->type.type_node == TypeNode::VOID) {
     invalid_print_argument_error(node);
@@ -817,6 +961,9 @@ inline Type SemanticAnalyzer::base_type_node_unify(TypeNode left,
   if (left == TypeNode::VOID && right == TypeNode::VOID) {
     return Type::from_type_node(TypeNode::VOID);
   }
+  if (left == TypeNode::VOID || right == TypeNode::VOID) {
+    return Type::error();
+  }
   switch (left) {
   case TypeNode::INT:
   case TypeNode::FLOAT:
@@ -842,7 +989,7 @@ inline Type SemanticAnalyzer::container_type_unify(const Type &left,
   case TypeNode::VOID:
     return Type::error();
   default:
-    if (left.sizes != right.sizes) {
+    if (left.sizes != right.sizes || left.is_const != right.is_const) {
       return Type::error();
     }
     Type base_type = base_type_node_unify(left.base_type, right.base_type);
@@ -852,15 +999,16 @@ inline Type SemanticAnalyzer::container_type_unify(const Type &left,
     Type t = Type::from_type_node(left.type_node);
     t.base_type = base_type.type_node;
     t.sizes = left.sizes;
+    t.is_const = left.is_const;
     return t;
   }
 }
 inline Type SemanticAnalyzer::super_base_type_node_unify(TypeNode left,
                                                          TypeNode right) {
-  if (left == TypeNode::VOID) {
-    return Type::error();
+  if (left == TypeNode::VOID && right == TypeNode::VOID) {
+    return Type::from_type_node(TypeNode::VOID);
   }
-  if (right == TypeNode::VOID) {
+  if (left == TypeNode::VOID || right == TypeNode::VOID) {
     return Type::error();
   }
   switch (left) {
@@ -896,7 +1044,7 @@ SemanticAnalyzer::super_container_type_unify(const Type &type_left,
   case TypeNode::VOID:
     return Type::error();
   }
-  if (type_left.sizes != type_right.sizes) {
+  if (type_left.sizes != type_right.sizes || type_left.is_const != type_right.is_const) {
     return Type::error();
   }
   Type base_type =
@@ -904,9 +1052,17 @@ SemanticAnalyzer::super_container_type_unify(const Type &type_left,
   if (base_type.is_null) {
     return Type::error();
   }
-  Type ret_type = type_left;
-  ret_type.base_type = base_type.type_node;
-  return ret_type;
+  Type t;
+  if (type_left.type_node == TypeNode::TENSOR ||
+      type_right.type_node == TypeNode::TENSOR) {
+    t = Type::from_type_node(TypeNode::TENSOR);
+  } else {
+    t = Type::from_type_node(type_left.type_node);
+  }
+  t.base_type = base_type.type_node;
+  t.sizes = type_left.sizes;
+  t.is_const = type_left.is_const;
+  return t;
 }
 inline Type SemanticAnalyzer::super_type_unify(const Type &left,
                                                const Type &right) {

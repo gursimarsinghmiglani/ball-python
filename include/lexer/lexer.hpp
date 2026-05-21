@@ -114,8 +114,9 @@ const std::vector<std::string> regexes = {"fn",
                                           "-",
                                           "\\*",
                                           "/",
-                                          "\\.\\*",
-                                          "\\./",
+                                          "%",
+                                          "@",
+                                          "inv",
                                           "==",
                                           "!=",
                                           "<",
@@ -162,7 +163,77 @@ inline std::vector<Lexeme> maximal_munch(std::string &source) {
   int line_number = 1;
   int pos_within_line = 1;
   int last_accepting_pos_within_line = 0;
+  while (pos < source.size() &&
+         std::isspace(static_cast<unsigned char>(source[pos]))) {
+    if (source[pos] == '\n') {
+      line_number++;
+      pos_within_line = 1;
+    } else {
+      pos_within_line++;
+    }
+    pos++;
+  }
   while (pos < source.size()) {
+    if (source[pos] == '"') {
+      int start = pos;
+      int start_col = pos_within_line;
+      pos++;
+      pos_within_line++;
+      std::string str_content;
+      while (pos < source.size() && source[pos] != '"') {
+        if (source[pos] == '\\' && pos + 1 < source.size()) {
+          pos++;
+          pos_within_line++;
+          switch (source[pos]) {
+          case 'n':
+            str_content += '\n';
+            break;
+          case 't':
+            str_content += '\t';
+            break;
+          case '\\':
+            str_content += '\\';
+            break;
+          case '"':
+            str_content += '"';
+            break;
+          default:
+            str_content += source[pos];
+            break;
+          }
+        } else if (source[pos] == '\n') {
+          std::cerr << "Lexical error in line " << line_number
+                    << " at position " << pos_within_line
+                    << ": Unterminated string literal\n";
+          std::exit(1);
+        } else {
+          str_content += source[pos];
+        }
+        pos++;
+        pos_within_line++;
+      }
+      if (pos >= source.size()) {
+        std::cerr << "Lexical error in line " << line_number << " at position "
+                  << start_col << ": Unterminated string literal\n";
+        std::exit(1);
+      }
+      pos++;
+      pos_within_line++;
+      Lexeme lexeme(start, pos - start, line_number, start_col, str_content,
+                    Token::TOK_STRING_LIT);
+      lexemes.push_back(lexeme);
+      while (pos < source.size() &&
+             std::isspace(static_cast<unsigned char>(source[pos]))) {
+        if (source[pos] == '\n') {
+          line_number++;
+          pos_within_line = 1;
+        } else {
+          pos_within_line++;
+        }
+        pos++;
+      }
+      continue;
+    }
     int last_accepting_state = -1;
     int last_accepting_pos = -1;
     int state = dfa.start_state;
@@ -199,7 +270,9 @@ inline std::vector<Lexeme> maximal_munch(std::string &source) {
                 << last_accepting_pos_within_line + 1 << "\n";
       std::exit(1);
     }
-    Lexeme lexeme(start, last_accepting_pos - start + 1, line_number,
+    int token_col =
+        last_accepting_pos_within_line - (last_accepting_pos - start);
+    Lexeme lexeme(start, last_accepting_pos - start + 1, line_number, token_col,
                   source.substr(start, last_accepting_pos - start + 1),
                   dfa.token_types[last_accepting_state]);
     if (lexeme.tok != Token::TOK_COMMENT) {
@@ -218,6 +291,6 @@ inline std::vector<Lexeme> maximal_munch(std::string &source) {
       pos++;
     }
   }
-  lexemes.push_back(Lexeme(-1, -1, -1, "", Token::TOK_EOF));
+  lexemes.push_back(Lexeme(-1, -1, -1, -1, "", Token::TOK_EOF));
   return lexemes;
 }
